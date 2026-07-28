@@ -35,10 +35,30 @@
   // list rows — they disagreed once, which left the button dead while the
   // entry was perfectly downloadable.
   const canDownload = it => !!it && (DL_KINDS.has(it.kind) ||
+                                     it.kind === 'youtube' ||
                                      (it.kind === 'dash' && it.paired));
-  const KIND_TAGS = { dash: 'DASH · coming soon', youtube: 'YouTube · Phase 3' };
+  const KIND_TAGS = { dash: 'DASH · coming soon' };
   // Nicer display names than raw extensions for stream types.
   const KIND_LABEL = { hls: 'HLS', dash: 'DASH', youtube: 'YT' };
+
+  // page URL -> [2160, 1440, ...] as answered by the app (which asks yt-dlp).
+  // Only YouTube has a quality menu: every other source here is a single file
+  // or a manifest, and there is nothing to choose between.
+  const ytHeights = new Map();
+  let ytHeightsPending = '';
+
+  function ensureYtHeights() {
+    const key = location.href;
+    if (ytHeights.has(key) || ytHeightsPending === key) return;
+    ytHeightsPending = key;
+    chrome.runtime.sendMessage({ t: 'ODM_YT_FORMATS', pageUrl: key })
+      .then(r => {
+        ytHeightsPending = '';
+        ytHeights.set(key, (r && Array.isArray(r.heights)) ? r.heights : []);
+        if (visible) render(itemsCache);   // the menu can fill in now
+      })
+      .catch(() => { ytHeightsPending = ''; });
+  }
 
   // blob: url -> Set(xpv_asset_id) reported by mse_probe.js. This is what
   // makes "which video did the user click" a fact instead of a guess: the
@@ -392,8 +412,11 @@
     // stream…" than offering a DIFFERENT feed video's file.
     const dirs = activeVideo ? mediaDirHints(activeVideo) : new Set();
     if (dirs.size && items.length) {
-      const own = items.filter(i => dirs.has(mediaDir(i.url)));
-      items = own;   // possibly empty -> loading state + refresh on play
+      // A YouTube entry has no CDN directory to match on (its url is a
+      // synthetic key, and the real hand-off is the page URL), so it is never
+      // what this filter is meant to reject.
+      items = items.filter(i => i.kind === 'youtube' ||
+                                dirs.has(mediaDir(i.url)));
     }
 
     // Pin to the video on screen. mediaDirHints() above cannot do it here:
@@ -428,7 +451,11 @@
     // the video and audio tracks as SEPARATE .mp4 range-files — the biggest
     // "video" there is silent. The manifest is the only complete choice.
     // Known track files (trackOf) sink below untagged progressive media.
-    const PRIO = { hls: 3, video: 2, audio: 1 };
+    // YouTube outranks everything: a watch page also streams small audio-only
+    // responses (ads, the sound of a preview) that the sniffer files as plain
+    // audio, and those were ranking above the video itself — the panel offered
+    // a 6 KB MP3 as the headline choice for a 45 MB video.
+    const PRIO = { youtube: 4, hls: 3, video: 2, audio: 1 };
     const prio = it => (PRIO[it.kind] || 0) - (it.trackOf ? 1.5 : 0);
     itemsCache = items.slice().sort((a, b) =>
       (canDownload(b) - canDownload(a)) ||
@@ -454,14 +481,54 @@
     }
     lblEl.textContent = 'Download ' + shortLabel(p);
     btnEl.disabled = !canDownload(p);
-    barEl.classList.toggle('single', items.length < 2);
-    if (items.length > 1) renderList(items); else listEl.hidden = true;
+    // A YouTube video is one entry but many choices, so the dropdown has to
+    // open even when it is the only thing on the page.
+    let extra = 0;
+    if (p.kind === 'youtube') {
+      ensureYtHeights();
+      extra = (ytHeights.get(location.href) || []).length;
+    }
+    barEl.classList.toggle('single', items.length + extra < 2);
+    if (items.length + extra > 1) renderList(items); else listEl.hidden = true;
     reposition();
+  }
+
+  // One row: `label` is the left badge, `meta` the description, `tag` the
+  // greyed note. `onClick` null makes the row inert (an entry we can name but
+  // not hand over).
+  function addRow(label, meta, tag, onClick) {
+    const row = document.createElement('div');
+    row.className = 'row' + (onClick ? '' : ' off');
+    const ext = document.createElement('span');
+    ext.className = 'ext';
+    ext.textContent = label;
+    const m = document.createElement('span');
+    m.className = 'meta';
+    m.textContent = meta;
+    row.append(ext, m);
+    if (tag) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = tag;
+      row.append(t);
+    }
+    if (onClick) row.addEventListener('click', onClick);
+    listEl.append(row);
+    return row;
   }
 
   function renderList(items) {
     listEl.innerHTML = '';
     for (const it of items) {
+      // YouTube: one row for "best", then one per quality the video really
+      // has, highest first. The list comes from the app, so it never offers a
+      // 4K rung for a video that was uploaded at 720p.
+      if (it.kind === 'youtube') {
+        addRow('YT', 'best quality · video + audio', null, () => download(it));
+        for (const h of (ytHeights.get(location.href) || []))
+          addRow(h + 'p', 'video + audio', null, () => download(it, h));
+        continue;
+      }
       const row = document.createElement('div');
       const dl = canDownload(it);
       row.className = 'row' + (dl ? '' : ' off');
@@ -499,17 +566,24 @@
   }
 
   // ---- download hand-off ----------------------------------------------------
-  async function download(it) {
+  // `height` is the quality picked from the YouTube menu (0 = best).
+  async function download(it, height) {
     setFeedback(null);
     let ok = false;
     try {
       const resp = await chrome.runtime.sendMessage({
         t: 'ODM_MEDIA_DOWNLOAD',
         url: it.url,
+        height: height || 0,
         audioUrl: it.audioUrl || '',   // paired DASH: muxed in by the app
         ext: it.ext,
         kind: it.kind,
-        title: document.title || ''
+        title: document.title || '',
+        // Read here, at click time, and never in the worker: YouTube is a
+        // single-page app, so the URL the background remembers for this frame
+        // can still be the page the user arrived from — which is how a watch
+        // page was handed over as "https://www.youtube.com/".
+        pageUrl: location.href
       });
       ok = !!(resp && resp.ok);
     } catch (e) { ok = false; }
@@ -545,6 +619,9 @@
     // not the video's. Resolution is the honest, useful bit of info.
     if (it.kind === 'hls')
       return '(HLS' + (it.res ? ' · ' + it.res : '') + ')';
+    // Same reasoning: the byte count of one sniffed googlevideo chunk says
+    // nothing about the video the app is going to fetch.
+    if (it.kind === 'youtube') return '(YouTube)';
     let s = '(' + (KIND_LABEL[it.kind] || (it.ext || 'video').toUpperCase());
     if (it.size) s += ' · ' + fmtSize(it.size);
     return s + ')';

@@ -1008,12 +1008,35 @@ function resetUrlProbe() {
   }
 }
 
+// Host match, not a substring test: "example.com/?r=youtube.com" is not a
+// YouTube link and must not be routed to the extractor.
+function isYouTubeUrl(url) {
+  try {
+    let h = new URL(url).hostname.toLowerCase().replace(/^(www|m)\./, '');
+    return h === 'youtube.com' || h === 'youtu.be' ||
+           h === 'music.youtube.com' || h === 'youtube-nocookie.com';
+  } catch (e) { return false; }
+}
+
 function requestUrlProbe() {
   if (!el.probeBox) return;
   const url = el.urlInput.value.trim();
   lastProbe = null;
   if (!/^https?:\/\//i.test(url) || typeof ProbeUrl !== 'function') {
     el.probeBox.style.display = 'none';
+    return;
+  }
+  // A YouTube watch page is HTML, not a file: probing it would report
+  // "Web page · 200 KB", which is a lie about what the user is going to get.
+  // The real name and size only exist after yt-dlp has resolved the page.
+  if ((pendingContext && pendingContext.type === 'ytdlp') || isYouTubeUrl(url)) {
+    el.probeBox.style.display = 'flex';
+    el.probeBox.classList.remove('err');
+    el.probeBadge.textContent = 'YT';
+    const h = pendingContext && pendingContext.height;
+    el.probeText.textContent = 'YouTube video  ·  ' +
+      (h ? h + 'p with audio' : 'best quality with audio') +
+      '  ·  resolved on start';
     return;
   }
   const id = 'probe_' + (++probeSeq);
@@ -1828,6 +1851,10 @@ function startNewDownload() {
     name = lastProbe.filename;
   }
   if (!name.includes('.')) name += '.bin';
+  // A watch page has no file name at all ("watch" -> "watch.bin"). The native
+  // side replaces this with the video title through UI.onPath as soon as
+  // yt-dlp has resolved the page; until then, say what is happening.
+  if (isYouTubeUrl(url)) name = 'YouTube video…';
   
   // The Options default folder is a DIRECTORY by definition — mark it with
   // a trailing separator so the native side still treats it as one (and
@@ -2225,7 +2252,8 @@ window.UI = {
   // filename/extra headers) is kept in memory only and consumed by
   // startNewDownload(). `headersJson` is a JSON object string of extra
   // request headers captured by the extension (may be empty).
-  onExternalDownload(url, filename, referrer, cookies, userAgent, headersJson, type, audioUrl) {
+  onExternalDownload(url, filename, referrer, cookies, userAgent, headersJson,
+                     type, audioUrl, height) {
     if (!url) return;
     let headers = {};
     if (headersJson) {
@@ -2237,17 +2265,23 @@ window.UI = {
       cookies: cookies || '',
       userAgent: userAgent || '',
       headers: headers,
-      type: type || '',       // "" (plain HTTP) | "hls" | "dash" — routes the engine
+      // "" (plain HTTP) | "hls" | "dash" | "ytdlp" — routes the engine
+      type: type || '',
       // Paired-track DASH only: the audio rung that belongs to `url`. The
       // native side downloads both and muxes them into one file.
-      audioUrl: audioUrl || ''
+      audioUrl: audioUrl || '',
+      // "ytdlp" only: the quality picked in the page panel, as a video height.
+      // Empty means best available.
+      height: height || ''
     };
     openModal();              // also clears url/path inputs
     el.urlInput.value = url;
     // pathInput stays empty on purpose: the native side saves to the default
     // folder and uses `filename` from the context for the final name.
     requestUrlProbe();        // show type/size before the user commits
-    showStatusToast('Download captured from browser. Press "Download Now" to start.');
+    showStatusToast(type === 'ytdlp'
+      ? 'YouTube video captured. Press "Download Now" to start.'
+      : 'Download captured from browser. Press "Download Now" to start.');
   }
 };
 

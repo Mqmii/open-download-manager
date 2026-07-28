@@ -21,6 +21,10 @@ web page and rendered by [Ultralight](https://ultralig.ht).
   offers a download button over the video you are actually watching — plain
   files, HLS/CMAF streams, and the paired video/audio streams Instagram and
   Facebook use.
+- **YouTube.** The extraction step — and only that step — is delegated to
+  `yt-dlp`, which ships inside the release ZIP as a single executable, so
+  nothing is installed by hand. The bytes themselves are fetched by ODM's own
+  multi-segment engine.
 - **Lossless remux.** When a stream ships video and audio separately, both
   tracks are downloaded and merged with libavformat. Codecs are copied, never
   re-encoded.
@@ -90,6 +94,20 @@ player itself — `createObjectURL`, `addSourceBuffer`, `appendBuffer` and the
 exact URLs behind it. On a page with 17 buffered clips this resolves to a
 single candidate.
 
+**YouTube.** A watch page is not a file, and its media URLs are signed by a
+player script that changes every few weeks — re-implementing that in C++ is a
+standing invitation to be broken. So the panel hands over the *page* URL, and
+the app asks the bundled `yt-dlp.exe` for the video and audio URLs behind it.
+What comes back are ordinary Range-capable links, which go into the same
+multi-segment engine as everything else and are muxed by the same libavformat
+code; the download is ours, only the extraction is delegated. When a video has
+no such link, yt-dlp fetches it directly instead — slower, one connection, but
+it always has an answer. The panel's dropdown lists the qualities this
+particular video actually has, highest first, so a 720p upload is never
+offered as 4K; the list comes from the app over the same bridge and is cached
+per video, because answering it means running the extractor. ODM refreshes `yt-dlp.exe` in the background at most
+once a week, which is what keeps this working long after a release was cut.
+
 **Installing the extension.** It is not on the Chrome Web Store, so load it
 unpacked: open `chrome://extensions`, turn on *Developer mode*, choose *Load
 unpacked* and pick the `extension/` folder. Start ODM first — the extension
@@ -145,6 +163,11 @@ cmake --preset default
 cmake --build build --config Release
 ```
 
+**yt-dlp.** Not in the repository: it is a 17 MB binary with its own release
+cadence. `tools/package.ps1` downloads it when building a release ZIP; for a
+local build, drop `yt-dlp.exe` into `tools/` and the build copies it next to
+`ODM.exe`. Everything else works without it — only YouTube links do not.
+
 The executable lands in `build/Release/ODM.exe`, with `assets/` copied beside
 it. Ultralight loads the interface from that folder at startup, so changing a
 file under `assets/` only needs a restart, not a rebuild.
@@ -160,6 +183,8 @@ src/
   Downloader.{h,cpp}    multi-segment HTTP engine (libcurl)
   HlsDownloader.{h,cpp} HLS/CMAF: playlists, byte ranges, AES-128, dual tracks
   DashDownloader.{h,cpp} paired-track DASH (Meta CDNs): video rung + audio rung
+  YtDlp.{h,cpp}         yt-dlp wrapper: page URL -> direct media URLs
+  YtDlpDownloader.{h,cpp} fallback engine for videos with no plain media URL
   Muxer.{h,cpp}         libavformat stream-copy remux into one .mp4
   BridgeServer.{h,cpp}  loopback HTTP bridge (WinSock)
 assets/                 the interface: index.html, app.css, app.js
@@ -180,10 +205,10 @@ is exposed to it as a handful of JavaScript functions.
 - [x] HLS/CMAF engine with separate-audio remux
 - [x] Paired-track DASH (Instagram / Facebook)
 - [x] Identity-based capture on MSE players
+- [x] YouTube support (yt-dlp resolves, ODM downloads)
 - [ ] Download queue with several simultaneous jobs
 - [ ] Pause per job, not just a global stop
 - [ ] DASH manifest (`.mpd`) engine
-- [ ] YouTube support
 - [ ] Long VODs (Twitch / Kick): streaming concat so a 30 GB recording does not
       need twice its size in free space, and playlist refresh for URLs that
       expire mid-download
@@ -201,7 +226,8 @@ token, so nothing outside the machine can queue a download.
 
 Licensed under the Apache License 2.0 — see [`LICENSE`](LICENSE).
 
-Third-party components keep their own terms. The Ultralight SDK is licensed
+Third-party components keep their own terms. `yt-dlp` is in the public domain
+(Unlicense) and is redistributed unmodified. The Ultralight SDK is licensed
 separately and must be obtained from its vendor; FFmpeg (libavformat/libavcodec)
 and libcurl carry their own licences, which matter in particular if you
 distribute a compiled binary rather than source.

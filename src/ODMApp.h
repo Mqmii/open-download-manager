@@ -17,6 +17,7 @@
 #include "Downloader.h"
 #include "DashDownloader.h"
 #include "HlsDownloader.h"
+#include "YtDlpDownloader.h"
 
 namespace odm {
 
@@ -99,6 +100,22 @@ private:
     ultralight::JSValue JS_GetPartInfo(const ultralight::JSObject& thisObj,
                                        const ultralight::JSArgs& args);
 
+    // Tail of JS_StartDownload: resolve the output path, announce the job and
+    // route it to an engine. Split out because a YouTube job cannot get here
+    // synchronously — its file name and media URLs only exist after yt-dlp has
+    // answered, so that path re-enters through here from the main thread.
+    void BeginDownload(std::string url, std::string out_path, std::string id,
+                       RequestContext ctx, std::string suggested_name,
+                       std::string job_type, std::string audio_url);
+
+    // Ask yt-dlp for the media URLs of a watch page on a worker thread, then
+    // continue in BeginDownload on the main thread.
+    void StartYouTubeDownload(const std::string& page_url,
+                              const std::string& out_path,
+                              const std::string& id,
+                              const std::string& suggested_name,
+                              int max_height);
+
     // ---- Engine callbacks ----
     void OnProgress(const ProgressInfo& info);
     void OnComplete(const DownloadResult& result);
@@ -128,6 +145,9 @@ private:
     HlsDownloader hls_;
     // Paired-track DASH (Instagram/Facebook): video rung + audio rung, muxed.
     DashDownloader dash_;
+    // YouTube fallback: yt-dlp does the fetching itself when the video has no
+    // plain Range-capable URL for our own engines to work with.
+    YtDlpDownloader ytdlp_;
     ultralight::RefPtr<ultralight::JSContext> js_ctx_;
 
     // Localhost bridge to the browser extension (127.0.0.1:47923).

@@ -11,7 +11,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Config = 'Release',
-    [string]$BuildDir = 'build'
+    [string]$BuildDir = 'build',
+    # Package without YouTube support. The ZIP still runs; the app reports the
+    # missing extractor instead of pretending a YouTube link is a plain file.
+    [switch]$NoYtDlp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,6 +49,24 @@ if (-not $crtRoot) {
 }
 foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
     Copy-Item (Join-Path $crtRoot.FullName $dll) $stage
+}
+
+# --- yt-dlp (YouTube extraction) ------------------------------------------
+# Shipped as a single self-contained .exe so the user installs nothing -- no
+# Python, no PATH entry, no second download. Only the URL resolution goes
+# through it; the bytes are fetched by ODM's own engine.
+#
+# Kept in tools/ between packaging runs so a release build is not at the mercy
+# of GitHub being reachable. The app refreshes it in the background (weekly),
+# which is what keeps YouTube working long after this ZIP was built.
+if (-not $NoYtDlp) {
+    $ytdlp = Join-Path $PSScriptRoot 'yt-dlp.exe'
+    if (-not (Test-Path $ytdlp)) {
+        Write-Host 'Downloading yt-dlp.exe...'
+        $url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+        Invoke-WebRequest -Uri $url -OutFile $ytdlp -UseBasicParsing
+    }
+    Copy-Item $ytdlp $stage
 }
 
 # --- the browser extension ------------------------------------------------
@@ -86,13 +107,14 @@ Copy-Item (Join-Path $root 'LICENSE')    $stage
 # --- strip anything the running app leaves behind -------------------------
 # bridge.token is a per-run secret, the console log is a debug artefact, and
 # .part/.odmprog files would be someone's half-finished download.
-Get-ChildItem $stage -Recurse -Include 'bridge.token', 'odm-console.log', '*.part', '*.odmprog', '*.vtrk', '*.atrk' |
+Get-ChildItem $stage -Recurse -Include 'bridge.token', 'odm-console.log', '*.part', '*.odmprog', '*.vtrk', '*.atrk', 'yt-dlp.stamp' |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
 # --- verify before zipping ------------------------------------------------
 $required = @('ODM.exe', 'Ultralight.dll', 'UltralightCore.dll', 'WebCore.dll', 'AppCore.dll',
               'libcurl.dll', 'avformat-62.dll', 'avcodec-62.dll', 'avutil-60.dll', 'mediainfo.dll',
               'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
+if (-not $NoYtDlp) { $required += 'yt-dlp.exe' }
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $stage $_)) }
 if ($missing) { throw "Missing from the package: $($missing -join ', ')" }
 foreach ($p in 'assets\index.html', 'assets\app.js', 'assets\app.css', 'assets\resources\cacert.pem',

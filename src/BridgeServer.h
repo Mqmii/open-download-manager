@@ -29,7 +29,12 @@ struct BridgePayload {
     // Second track for paired-track DASH (Instagram/Facebook): the audio-only
     // representation that belongs to `url`'s video rung. Empty otherwise.
     std::string audio_url;
-    std::string type;         // "" (plain HTTP) | "hls" | "dash" | later "youtube"
+    // "" (plain HTTP) | "hls" | "dash" | "ytdlp" (a watch page the app
+    // resolves with yt-dlp before any byte is fetched).
+    std::string type;
+    // "ytdlp" only: the quality the user picked from the panel's menu, as a
+    // video height ("1080"). Empty means best available.
+    std::string height;
 };
 
 ///

@@ -5,6 +5,8 @@
 
 #include "ODMApp.h"
 
+#include "YtDlp.h"
+
 #include <Ultralight/ConsoleMessage.h>
 #include <Ultralight/View.h>
 
@@ -955,6 +957,24 @@ ODMApp::ODMApp() {
             PostJS(js.str());
         });
 
+    // YouTube fallback engine: single-connection, but the same callbacks, so
+    // the UI cannot tell which engine is behind a row.
+    ytdlp_.SetProgressCallback(
+        [this](const ProgressInfo& p) { OnProgress(p); });
+    ytdlp_.SetCompletionCallback(
+        [this](const DownloadResult& r) { OnComplete(r); });
+    ytdlp_.SetPathResolvedCallback(
+        [this](const std::string& id, const std::string& path) {
+            std::ostringstream js;
+            js << "if (window.UI && UI.onPath) UI.onPath('"
+               << EscapeJS(id) << "', '" << EscapeJS(path) << "');";
+            PostJS(js.str());
+        });
+    // An out-of-date yt-dlp is the one thing that reliably breaks YouTube
+    // support months after a release. Checked at most weekly, off-thread,
+    // and silent either way — nothing here depends on it succeeding.
+    ytdlp::SelfUpdateAsync();
+
     overlay_->view()->LoadURL("file:///index.html");
 
     // Start the browser bridge (Chrome extension -> this app). If the port is
@@ -995,9 +1015,11 @@ void ODMApp::OnClose(ultralight::Window*) {
     downloader_.Stop();
     hls_.Stop();
     dash_.Stop();
+    ytdlp_.Stop();
     downloader_.WaitForCompletion();
     hls_.WaitForCompletion();
     dash_.WaitForCompletion();
+    ytdlp_.WaitForCompletion();
     app_->Quit();
 }
 
@@ -1130,7 +1152,8 @@ void ODMApp::OnDOMReady(ultralight::View* caller,
 
 void ODMApp::JS_StartDownload(const ultralight::JSObject&,
                               const ultralight::JSArgs& args) {
-    if (downloader_.IsRunning() || hls_.IsRunning() || dash_.IsRunning()) {
+    if (downloader_.IsRunning() || hls_.IsRunning() || dash_.IsRunning() ||
+        ytdlp_.IsRunning()) {
         PostJS("UI.onStatus('A download is already running.');");
         return;
     }
@@ -1157,6 +1180,7 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
     std::string suggested_name;
     std::string job_type;
     std::string audio_url;
+    int max_height = 0;   // YouTube quality menu; 0 = best available
     if (args.size() >= 4 && args[3].IsString()) {
         std::string ctx_json = ToStdStr(args[3].ToString());
         std::map<std::string, std::string> m;
@@ -1166,15 +1190,40 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
             req_ctx.user_agent = m["userAgent"];
             job_type = m["type"];
             audio_url = m["audioUrl"];   // paired DASH: the audio rung
+            if (!m["height"].empty()) max_height = std::atoi(m["height"].c_str());
             for (const auto& kv : m) {
                 if (kv.first.rfind("headers.", 0) == 0)
                     req_ctx.extra_headers.push_back(
                         kv.first.substr(8) + ": " + kv.second);
             }
-            suggested_name = Downloader::SanitizeForPath(m["filename"]);
+            // Only when the browser actually suggested one: SanitizeForPath
+            // answers "download.bin" for an empty string, which would turn
+            // "no name was supplied" into a name that then beats every better
+            // source we have (a YouTube title, say) and lands a video on disk
+            // as download.bin — with an extension no muxer can write.
+            if (!m["filename"].empty())
+                suggested_name = Downloader::SanitizeForPath(m["filename"]);
         }
     }
 
+    // A watch page is not a file: there is nothing to name, size or fetch
+    // until yt-dlp has told us what the page actually holds. That answer
+    // comes back on a worker thread and re-enters at BeginDownload.
+    if (job_type == "ytdlp" ||
+        (job_type.empty() && ytdlp::IsSupportedUrl(url))) {
+        StartYouTubeDownload(url, out_path, id, suggested_name, max_height);
+        return;
+    }
+
+    BeginDownload(std::move(url), std::move(out_path), std::move(id),
+                  std::move(req_ctx), std::move(suggested_name),
+                  std::move(job_type), std::move(audio_url));
+}
+
+void ODMApp::BeginDownload(std::string url, std::string out_path,
+                           std::string id, RequestContext req_ctx,
+                           std::string suggested_name, std::string job_type,
+                           std::string audio_url) {
     // Derive a safe filename from the URL (used when the caller gave no path,
     // or only a directory). A browser-suggested filename wins when present.
     auto name_from_url = [&url]() -> std::string {
@@ -1220,14 +1269,15 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
     // Never silently overwrite a finished file with the same name: fresh
     // jobs get "name (1).ext"; resume sidecars keep the original path.
     {
-        const std::string uniq = UniquifyPath(out_path);
-        if (uniq != out_path) {
-            out_path = uniq;
-            std::ostringstream js;
-            js << "if (window.UI && UI.onPath) UI.onPath('" << EscapeJS(id)
-               << "', '" << EscapeJS(out_path) << "');";
-            PostJS(js.str());
-        }
+        out_path = UniquifyPath(out_path);
+        // Told unconditionally, not only when the name had to be uniquified:
+        // a YouTube row is created before anything about the file is known
+        // (the URL's basename is "watch"), so this is the moment the list
+        // learns the real name the video is being saved under.
+        std::ostringstream js;
+        js << "if (window.UI && UI.onPath) UI.onPath('" << EscapeJS(id)
+           << "', '" << EscapeJS(out_path) << "');";
+        PostJS(js.str());
     }
 
     PostJS("UI.onStatus('Connecting to server...');");
@@ -1244,14 +1294,92 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
         // `url` is the chosen video rung, `audio_url` its audio track; the
         // engine downloads both and remuxes them into one file.
         dash_.Start(url, audio_url, out_path, id, req_ctx);
+    } else if (job_type == "ytdlp-direct") {
+        // No plain media URL exists for this video — yt-dlp fetches it itself.
+        ytdlp_.Start(url, out_path, id);
     } else {
         downloader_.Start(url, out_path, id, req_ctx);
     }
 }
 
+void ODMApp::StartYouTubeDownload(const std::string& page_url,
+                                  const std::string& out_path,
+                                  const std::string& id,
+                                  const std::string& suggested_name,
+                                  int max_height) {
+    if (!ytdlp::Available()) {
+        PostJS("UI.onStatus('YouTube support needs yt-dlp.exe next to ODM.exe.');");
+        std::ostringstream js;
+        js << "if (window.UI && UI.onComplete) UI.onComplete('" << EscapeJS(id)
+           << "', 'error', '', 'yt-dlp.exe is missing from the ODM folder.');";
+        PostJS(js.str());
+        return;
+    }
+
+    PostJS("UI.onStatus('Reading the video page...');");
+
+    std::thread([this, page_url, out_path, id, suggested_name, max_height] {
+        ytdlp::MediaInfo info;
+        const bool ok = ytdlp::Resolve(page_url, &info, max_height);
+
+        // Everything below touches the engines and the UI, both of which are
+        // main-thread only.
+        PostNativeTask([this, page_url, out_path, id, suggested_name, info, ok,
+                        max_height] {
+            // The page title is the only sensible file name here; the URL
+            // basename is "watch". A name the extension supplied still wins.
+            std::string name = suggested_name;
+            if (name.empty() && !info.title.empty())
+                name = Downloader::SanitizeForPath(info.title);
+            if (name.empty()) name = "youtube-video";
+            // The extension is not cosmetic here: the two tracks are joined by
+            // libavformat, which picks the output container from it. A name
+            // ending in anything else (or nothing) fails the mux after both
+            // tracks have already been downloaded.
+            const std::string ext = "." + (info.ext.empty() ? "mp4" : info.ext);
+            if (name.size() < ext.size() ||
+                name.compare(name.size() - ext.size(), ext.size(), ext) != 0)
+                name += ext;
+
+            if (!ok && !info.identified) {
+                // yt-dlp could not even tell what video this is (a feed URL, a
+                // private or removed video, no network). Handing the job to
+                // the fallback engine here would download SOMETHING and call
+                // it a success — report the reason instead.
+                std::ostringstream js;
+                js << "if (window.UI && UI.onComplete) UI.onComplete('"
+                   << EscapeJS(id) << "', 'error', '', '"
+                   << EscapeJS(info.error.empty()
+                                   ? "Could not read this YouTube video."
+                                   : info.error) << "');";
+                PostJS(js.str());
+                return;
+            }
+            if (!ok || info.video_url.empty()) {
+                // The video is real but has no plain Range-capable URL: hand
+                // the whole job to yt-dlp instead of failing. The quality cap
+                // rides on the engine because BeginDownload routes by type
+                // alone and knows nothing about YouTube.
+                ytdlp_.SetMaxHeight(max_height);
+                BeginDownload(page_url, out_path, id, RequestContext{}, name,
+                              "ytdlp-direct", "");
+                return;
+            }
+            // The normal case: two ordinary https tracks, downloaded by the
+            // multi-segment engine and muxed by us — same as any DASH job.
+            RequestContext ctx;
+            ctx.referrer = "https://www.youtube.com/";
+            BeginDownload(info.video_url, out_path, id, ctx, name,
+                          info.audio_url.empty() ? "" : "dash",
+                          info.audio_url);
+        });
+    }).detach();
+}
+
 void ODMApp::JS_StopDownload(const ultralight::JSObject&,
                              const ultralight::JSArgs&) {
-    if (!downloader_.IsRunning() && !hls_.IsRunning() && !dash_.IsRunning()) {
+    if (!downloader_.IsRunning() && !hls_.IsRunning() && !dash_.IsRunning() &&
+        !ytdlp_.IsRunning()) {
         PostJS("UI.onStatus('No active download to stop.');");
         return;
     }
@@ -1259,6 +1387,7 @@ void ODMApp::JS_StopDownload(const ultralight::JSObject&,
     downloader_.Stop();
     hls_.Stop();
     dash_.Stop();
+    ytdlp_.Stop();
 }
 
 void ODMApp::JS_ApplySettings(const ultralight::JSObject&,
@@ -1275,6 +1404,13 @@ void ODMApp::JS_ApplySettings(const ultralight::JSObject&,
         hls_.SetPartCount(static_cast<int>(args[0].ToNumber()));
     if (args.size() >= 3 && args[2].IsNumber())
         hls_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
+    // DASH tracks and the yt-dlp fallback obey the same cap (part count is
+    // fixed for both: DASH inherits the plain engine's, yt-dlp has one
+    // connection by construction).
+    if (args.size() >= 3 && args[2].IsNumber()) {
+        dash_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
+        ytdlp_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
+    }
     // args[3] (downloadPath) is stored in localStorage on the JS side.
 }
 
@@ -1919,7 +2055,8 @@ void ODMApp::OnExternalDownload(const BridgePayload& payload) {
            << EscapeJS(payload.user_agent) << "', '"
            << EscapeJS(hdrs.str()) << "', '"
            << EscapeJS(payload.type) << "', '"
-           << EscapeJS(payload.audio_url) << "');";
+           << EscapeJS(payload.audio_url) << "', '"
+           << EscapeJS(payload.height) << "');";
         PostJS(js.str());
     });
 }

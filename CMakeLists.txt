@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.1.0)
+        VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,10 @@ add_app(${APP_NAME}
     src/HlsDownloader.cpp
     src/DashDownloader.h
     src/DashDownloader.cpp
+    src/YtDlp.h
+    src/YtDlp.cpp
+    src/YtDlpDownloader.h
+    src/YtDlpDownloader.cpp
     src/Muxer.h
     src/Muxer.cpp
     src/BridgeServer.h
@@ -78,8 +82,12 @@ if(WIN32)
 endif()
 
 # Make file:// URLs resolve to our assets/ folder next to the executable.
+# ODM_VERSION comes from project(VERSION) above so the number the bridge
+# reports (and the extension popup shows) cannot drift from the one the
+# release is cut with.
 target_compile_definitions(${APP_NAME} PRIVATE
-    ULTRALIGHT_FILESYSTEM_PATH="./assets/")
+    ULTRALIGHT_FILESYSTEM_PATH="./assets/"
+    ODM_VERSION="${PROJECT_VERSION}")
 
 # Copy our UI assets next to the binary for local testing / when running
 # straight out of the build dir (the add_app macro already installs assets/
@@ -94,3 +102,14 @@ add_custom_command(TARGET ${APP_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${UL_SDK_PATH}/bin"
         "$<TARGET_FILE_DIR:${APP_NAME}>")
+
+# yt-dlp.exe (YouTube extraction) is not in the repository -- it is a 17 MB
+# binary that updates itself. tools/package.ps1 downloads it when building a
+# release; for a local build, drop it in tools/ and it lands next to ODM.exe.
+# Without it everything else still builds and runs, YouTube links aside.
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/yt-dlp.exe")
+    add_custom_command(TARGET ${APP_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/yt-dlp.exe"
+            "$<TARGET_FILE_DIR:${APP_NAME}>/yt-dlp.exe")
+endif()

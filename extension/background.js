@@ -20,6 +20,7 @@
 const ODM_BASE  = 'http://127.0.0.1:47923';
 const PING_URL  = ODM_BASE + '/ping';
 const ADD_URL   = ODM_BASE + '/add';
+const YTFMT_URL = ODM_BASE + '/ytformats';
 const PING_ALARM = 'odm-ping';
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,34 @@ async function sendToOdm(payload) {
     }
   }
   return false;
+}
+
+// Quality menu for one video. The app answers this by running yt-dlp, which
+// costs a second or two and blocks its single-threaded bridge, so the answer
+// is cached per video URL: the panel asks once, not on every hover. The cache
+// dies with the service worker, which is exactly the right lifetime — a
+// re-asked question is cheap, a stale quality list is not.
+const ytFormatCache = new Map();
+
+async function ytHeights(url) {
+  if (ytFormatCache.has(url)) return ytFormatCache.get(url);
+  if (!connected || !token) await ping();
+  if (!connected || !token) return [];
+  try {
+    const r = await fetch(YTFMT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-ODM-Token': token },
+      body: JSON.stringify({ url })
+    });
+    if (!r.ok) return [];
+    const j = await r.json();
+    const heights = Array.isArray(j.heights) ? j.heights : [];
+    ytFormatCache.set(url, heights);
+    if (ytFormatCache.size > 32) ytFormatCache.delete(ytFormatCache.keys().next().value);
+    return heights;
+  } catch (e) {
+    return [];
+  }
 }
 
 async function cookieHeader(url) {
@@ -399,10 +428,14 @@ function mediaKey(url, kind) {
     if (info && info.assetId) return 'fbdash:' + info.assetId;
   }
   if (kind === 'youtube') {
+    // One entry per VIDEO, not per track: googlevideo serves the video and
+    // the audio rung from different itags of the same `id`, and listing both
+    // would offer the user a silent file next to a soundless-looking one.
+    // Nothing of the URL is kept — the app re-resolves the watch page — so
+    // the id alone is the whole identity.
     try {
-      const u = new URL(url);
-      ['range', 'rn', 'rbuf', 'ump', 'sr'].forEach(p => u.searchParams.delete(p));
-      return u.toString();
+      const id = new URL(url).searchParams.get('id');
+      if (id) return 'yt:' + id;
     } catch (e) { /* fall through */ }
   }
   return url;
@@ -415,7 +448,13 @@ function addMedia(tabId, item) {
     mediaCache.set(tabId, m);
   }
   const key = mediaKey(item.url, item.kind);
-  if (item.kind === 'youtube') item.url = key;   // store the cleaned URL
+  if (item.kind === 'youtube') {
+    // A googlevideo URL is signed, throttled and short-lived; the app never
+    // uses it. The entry exists only to say "this tab is playing a YouTube
+    // video" — the page URL is what gets handed over.
+    item.size = 0;
+    item.url = key;
+  }
   const prev = m.get(key);
   // Every rung of a Meta video shares one key, so each sighting folds into the
   // same entry. The raw URL must be read BEFORE mergeMetaDashRung rewrites
@@ -728,6 +767,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.t === 'ODM_YT_FORMATS') {
+    const page = [String(msg.pageUrl || ''), sender.url,
+                  sender.tab && sender.tab.url].find(isYouTubeVideoUrl);
+    if (!page) { sendResponse({ heights: [] }); return undefined; }
+    ytHeights(page).then(heights => sendResponse({ heights }));
+    return true;   // async sendResponse
+  }
+
   if (msg.t === 'ODM_MEDIA_DOWNLOAD') {
     handleMediaDownload(msg, sender).then(ok => sendResponse({ ok }));
     return true;
@@ -736,11 +783,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return undefined;
 });
 
+// Does this URL name ONE video? "https://www.youtube.com/" does not — and
+// handing that over means yt-dlp is pointed at the home feed, which is how an
+// empty file ends up in the download list.
+function isYouTubeVideoUrl(url) {
+  if (!/^https?:\/\//i.test(url || '')) return false;
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  const host = u.hostname.toLowerCase().replace(/^(www|m)\./, '');
+  const id = /^[\w-]{6,}$/;
+  if (host === 'youtu.be') return id.test(u.pathname.slice(1));
+  if (host !== 'youtube.com' && host !== 'music.youtube.com' &&
+      host !== 'youtube-nocookie.com') return false;
+  if (u.pathname === '/watch') return id.test(u.searchParams.get('v') || '');
+  const m = u.pathname.match(/^\/(shorts|embed|live|v)\/([^/?#]+)/);
+  return !!m && id.test(m[2]);
+}
+
 async function handleMediaDownload(msg, sender) {
-  const url = String(msg.url || '');
-  if (!/^https?:\/\//i.test(url)) return false;
+  let url = String(msg.url || '');
   const pageUrl = sender.url || (sender.tab && sender.tab.url) || '';
   const kind = String(msg.kind || '');
+
+  // YouTube hands over the PAGE, not the media URL. The googlevideo link the
+  // sniffer saw is signed, rate-limited and expires within hours; the app
+  // re-resolves the watch page with yt-dlp instead, which is also the only
+  // way to get the audio track that goes with it.
+  if (kind === 'youtube') {
+    // Take the first candidate that actually names a video. The content
+    // script's location.href is read at click time and is therefore the only
+    // one that survives SPA navigation; the other two are fallbacks for a
+    // panel that was driven from somewhere else.
+    const page = [String(msg.pageUrl || ''), sender.url,
+                  sender.tab && sender.tab.url].find(isYouTubeVideoUrl);
+    if (!page) {
+      notify('ODM', 'Could not tell which YouTube video this is. ' +
+                    'Reload the page and try again.');
+      return false;
+    }
+    // No `filename` key at all, not an empty one: the app names the file after
+    // the video title, and an empty string is a value it would have to guess
+    // the meaning of.
+    const payload = { url: page, type: 'ytdlp', referrer: page };
+    // The quality the user picked, as a video height. Absent = best available.
+    const h = parseInt(msg.height, 10);
+    if (h > 0) payload.height = String(h);
+    const ok = await sendToOdm(payload);
+    if (!ok) {
+      notify('ODM is not running',
+             'Could not hand off the video. Please start the ODM app first.');
+    }
+    return ok;
+  }
+
+  if (!/^https?:\/\//i.test(url)) return false;
   const payload = {
     url,
     filename: suggestMediaFilename(msg.title, url, msg.ext, kind),

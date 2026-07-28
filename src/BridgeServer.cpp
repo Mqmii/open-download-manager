@@ -5,6 +5,11 @@
 
 #include "BridgeServer.h"
 
+// The quality menu is answered straight from here: ListHeights() is a pure
+// query with no app state behind it, so routing it through ODMApp would only
+// add a hop.
+#include "YtDlp.h"
+
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
   #define NOMINMAX
@@ -19,6 +24,12 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+
+// Defined by CMake from project(VERSION). The fallback only matters to a
+// build that compiles this file outside the project's own target.
+#ifndef ODM_VERSION
+  #define ODM_VERSION "0.0.0"
+#endif
 
 namespace odm {
 
@@ -491,7 +502,8 @@ void BridgeServer::HandleClient(uintptr_t client) {
     // --- GET /ping ---------------------------------------------------------
     if (req.method == "GET" && (req.path == "/ping" || req.path == "/")) {
         std::string body =
-            "{\"app\":\"odm\",\"version\":\"0.1\",\"token\":\"" + token_ + "\"}";
+            "{\"app\":\"odm\",\"version\":\"" ODM_VERSION "\",\"token\":\"" +
+            token_ + "\"}";
         Respond(s, 200, "OK", body, allow_origin);
         return;
     }
@@ -523,6 +535,7 @@ void BridgeServer::HandleClient(uintptr_t client) {
         p.user_agent = m["userAgent"];
         p.audio_url  = m["audioUrl"];
         p.type       = m["type"];
+        p.height     = m["height"];
         for (const auto& kv : m) {
             if (kv.first.rfind("headers.", 0) == 0)
                 p.headers.emplace_back(kv.first.substr(8), kv.second);
@@ -535,6 +548,38 @@ void BridgeServer::HandleClient(uintptr_t client) {
         }
         if (cb_) cb_(p);
         Respond(s, 200, "OK", "{\"ok\":true}", allow_origin);
+        return;
+    }
+
+    // --- POST /ytformats ---------------------------------------------------
+    // The quality menu the in-page panel shows for a YouTube video. Answering
+    // means running yt-dlp, which takes a second or two, and this server
+    // handles one connection at a time — so the extension caches the answer
+    // per video and asks once, not on every hover.
+    if (req.method == "POST" && req.path == "/ytformats") {
+        if (!origin.empty() && !ext_origin) {
+            Respond(s, 403, "Forbidden", "{\"ok\":false,\"error\":\"bad origin\"}");
+            return;
+        }
+        auto tit = req.headers.find("x-odm-token");
+        if (tit == req.headers.end() || tit->second != token_) {
+            Respond(s, 401, "Unauthorized", "{\"ok\":false,\"error\":\"bad token\"}");
+            return;
+        }
+        std::map<std::string, std::string> m;
+        if (!ParseSimpleJson(req.body, m)) {
+            Respond(s, 400, "Bad Request", "{\"ok\":false,\"error\":\"bad json\"}");
+            return;
+        }
+        std::vector<int> heights;
+        ytdlp::ListHeights(m["url"], &heights);
+        std::string body = "{\"ok\":true,\"heights\":[";
+        for (size_t i = 0; i < heights.size(); ++i) {
+            if (i) body += ",";
+            body += std::to_string(heights[i]);
+        }
+        body += "]}";
+        Respond(s, 200, "OK", body, allow_origin);
         return;
     }
 

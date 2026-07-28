@@ -57,3 +57,10 @@ node_modules/
 
 # Release packages produced by tools/package.ps1
 dist/
+
+# Fetched by tools/package.ps1, updates itself at runtime -- a 17 MB binary
+# with its own release cadence has no business in the history.
+tools/yt-dlp.exe
+yt-dlp.exe
+# weekly update check stamp, written next to the executable
+yt-dlp.stamp
