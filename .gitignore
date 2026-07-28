@@ -54,3 +54,6 @@ Thumbs.db
 
 # Only used to run extension/test_sniffer.js
 node_modules/
+
+# Release packages produced by tools/package.ps1
+dist/
