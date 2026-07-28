@@ -60,10 +60,26 @@ static std::string HumanSize(double bytes) {
     return os.str();
 }
 
+// Escape a value for embedding in the single-quoted JS string literals PostJS
+// builds. Beyond the obvious quotes, U+2028 and U+2029 matter: engines older
+// than ES2019 treat them as literal line terminators *inside* a string, so a
+// video title or error message carrying one would truncate the statement and
+// make the whole UI.onXxx(...) call vanish without a trace.
 static std::string EscapeJS(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
-    for (char c : s) {
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        // UTF-8 encodings of U+2028 (E2 80 A8) and U+2029 (E2 80 A9).
+        if (c == 0xE2 && i + 2 < s.size() &&
+            static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+            (static_cast<unsigned char>(s[i + 2]) == 0xA8 ||
+             static_cast<unsigned char>(s[i + 2]) == 0xA9)) {
+            out += static_cast<unsigned char>(s[i + 2]) == 0xA8 ? "\\u2028"
+                                                                : "\\u2029";
+            i += 2;
+            continue;
+        }
         switch (c) {
             case '\\': out += "\\\\"; break;
             case '\'': out += "\\'";  break;
@@ -71,7 +87,7 @@ static std::string EscapeJS(const std::string& s) {
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
-            default:   out += c;
+            default:   out += static_cast<char>(c);
         }
     }
     return out;
@@ -988,6 +1004,9 @@ ODMApp::ODMApp() {
 }
 
 ODMApp::~ODMApp() {
+    // Normally OnClose already did this; repeat it for the paths that tear the
+    // app down without one, so no detached worker can post into a dying app.
+    mail_->Close();
 #if defined(_WIN32)
     // Ensure the tray thread has exited (normally it stops during OnClose).
     if (tray_thread_.joinable()) {
@@ -1020,6 +1039,11 @@ void ODMApp::OnClose(ultralight::Window*) {
     hls_.WaitForCompletion();
     dash_.WaitForCompletion();
     ytdlp_.WaitForCompletion();
+    // Last: the engines above are joined, but the detached probe / MediaInfo /
+    // resolver / "Open with" workers are not and may still be running. Closing
+    // the mailbox makes whatever they post from here on a no-op, so none of
+    // them can touch members that are about to be destroyed.
+    mail_->Close();
     app_->Quit();
 }
 
@@ -1080,8 +1104,8 @@ void ODMApp::OnUpdate() {
     {
         std::queue<std::function<void()>> tasks;
         {
-            std::lock_guard<std::mutex> lk(native_tasks_mtx_);
-            tasks.swap(native_tasks_);
+            std::lock_guard<std::mutex> lk(mail_->mtx);
+            tasks.swap(mail_->tasks);
         }
         while (!tasks.empty()) {
             tasks.front()();
@@ -1092,8 +1116,8 @@ void ODMApp::OnUpdate() {
     // Drain any pending JS that worker threads queued.
     std::queue<std::string> local;
     {
-        std::lock_guard<std::mutex> lk(js_queue_mtx_);
-        local.swap(js_queue_);
+        std::lock_guard<std::mutex> lk(mail_->mtx);
+        local.swap(mail_->js);
     }
     if (!overlay_ || !overlay_->view()) return;
     while (!local.empty()) {
@@ -1318,14 +1342,20 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
 
     PostJS("UI.onStatus('Reading the video page...');");
 
-    std::thread([this, page_url, out_path, id, suggested_name, max_height] {
+    // Resolving spawns yt-dlp and can take seconds; the mailbox (not `this`)
+    // is what the worker carries, so closing the window mid-resolve simply
+    // drops the result.
+    std::thread([this, mail = mail_, page_url, out_path, id, suggested_name,
+                 max_height] {
         ytdlp::MediaInfo info;
         const bool ok = ytdlp::Resolve(page_url, &info, max_height);
 
         // Everything below touches the engines and the UI, both of which are
-        // main-thread only.
-        PostNativeTask([this, page_url, out_path, id, suggested_name, info, ok,
-                        max_height] {
+        // main-thread only. `this` is safe to capture here because the task
+        // only ever runs from OnUpdate, and a closed mailbox never hands it
+        // out at all.
+        mail->PostTask([this, page_url, out_path, id, suggested_name,
+                        info, ok, max_height] {
             // The page title is the only sensible file name here; the URL
             // basename is "watch". A name the extension supplied still wins.
             std::string name = suggested_name;
@@ -1559,8 +1589,10 @@ ODMApp::JS_OpenWith(const ultralight::JSObject&,
     // SHOpenWithDialog blocks until the user picks an app, and it needs COM on
     // the calling thread. Running it inline would freeze rendering for as long
     // as the chooser is open, so it gets its own thread and its own apartment.
+    // The dialog outlives everything if the user just leaves it sitting there,
+    // so this worker carries the mailbox rather than `this`.
     HWND owner = static_cast<HWND>(hwnd_);
-    std::thread([this, wpath, owner] {
+    std::thread([mail = mail_, wpath, owner] {
         const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         OPENASINFO info{};
         info.pcszFile  = wpath.c_str();
@@ -1572,7 +1604,7 @@ ODMApp::JS_OpenWith(const ultralight::JSObject&,
         if (SUCCEEDED(co)) CoUninitialize();
         // The user cancelling is not an error worth reporting.
         if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
-            PostJS("UI.onStatus('Could not open the \"Open with\" dialog.');");
+            mail->PostJS("UI.onStatus('Could not open the \"Open with\" dialog.');");
     }).detach();
 #else
     (void)0; // POSIX implementation not provided yet.
@@ -1748,10 +1780,9 @@ void ODMApp::JS_RequestMediaInfo(const ultralight::JSObject&,
         req_id = ToStdStr(args[1].ToString());
 
     // Opening and scanning the file hits the disk (and can take a moment on
-    // large MKVs), so run it on a detached worker and post the result back.
-    // PostJS is already called from downloader worker threads, so it is safe
-    // to use from here as well.
-    std::thread([this, path, req_id] {
+    // large MKVs), so run it on a detached worker and post the result back
+    // through the mailbox, which stays valid even if the window closes first.
+    std::thread([mail = mail_, path, req_id] {
         std::string info_utf8;
 #if defined(_WIN32)
         std::error_code ec;
@@ -1769,7 +1800,7 @@ void ODMApp::JS_RequestMediaInfo(const ultralight::JSObject&,
         std::ostringstream js;
         js << "if (window.UI && UI.onMediaInfo) UI.onMediaInfo('"
            << EscapeJS(req_id) << "', '" << EscapeJS(info_utf8) << "');";
-        PostJS(js.str());
+        mail->PostJS(js.str());
     }).detach();
 }
 
@@ -1922,15 +1953,33 @@ ProbeInfo ProbeAttempt(const std::string& url, bool head,
     return pi;
 }
 
+// Escape a value for a JSON string. `<` and `>` are escaped too, which JSON
+// permits and JSON.parse undoes: the probe's filename comes straight from a
+// remote Content-Disposition header, and neutering the angle brackets at the
+// source means a malicious server cannot smuggle markup toward the UI even if
+// some future call site forgets to escape on render. U+2028/U+2029 get the
+// same treatment as in EscapeJS, since this JSON is delivered inside one.
 std::string JsonEsc(const std::string& s) {
     std::string out;
-    for (unsigned char c : s) {
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == 0xE2 && i + 2 < s.size() &&
+            static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+            (static_cast<unsigned char>(s[i + 2]) == 0xA8 ||
+             static_cast<unsigned char>(s[i + 2]) == 0xA9)) {
+            out += static_cast<unsigned char>(s[i + 2]) == 0xA8 ? "\\u2028"
+                                                                : "\\u2029";
+            i += 2;
+            continue;
+        }
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
+            case '"':  out += "\\\"";   break;
+            case '\\': out += "\\\\";   break;
+            case '\n': out += "\\n";    break;
+            case '\r': out += "\\r";    break;
+            case '\t': out += "\\t";    break;
+            case '<':  out += "\\u003c"; break;
+            case '>':  out += "\\u003e"; break;
             default:
                 if (c < 0x20) { char b[8]; snprintf(b, 8, "\\u%04x", c); out += b; }
                 else out += static_cast<char>(c);
@@ -1953,7 +2002,7 @@ void ODMApp::JS_ProbeUrl(const ultralight::JSObject&,
 
     // Network round-trips must never block the UI thread; same detached
     // worker + PostJS pattern as RequestMediaInfo.
-    std::thread([this, url, req_id, cookies, referrer, ua] {
+    std::thread([mail = mail_, url, req_id, cookies, referrer, ua] {
         // HEAD first (cheapest); many video CDNs reject it (403/405) or
         // return no useful headers -> retry as a 1-byte ranged GET.
         ProbeInfo pi = ProbeAttempt(url, true, cookies, referrer, ua);
@@ -1972,7 +2021,7 @@ void ODMApp::JS_ProbeUrl(const ultralight::JSObject&,
         std::ostringstream js;
         js << "if (window.UI && UI.onUrlProbe) UI.onUrlProbe('"
            << EscapeJS(req_id) << "', '" << EscapeJS(json.str()) << "');";
-        PostJS(js.str());
+        mail->PostJS(js.str());
     }).detach();
 }
 
@@ -2112,17 +2161,32 @@ void ODMApp::BringWindowToFront() {
 
 // --- Thread-safe JS dispatch ----------------------------------------------
 
-void ODMApp::PostJS(const std::string& script) {
-    {
-        std::lock_guard<std::mutex> lk(js_queue_mtx_);
-        js_queue_.push(script);
-    }
+void ODMApp::Mailbox::PostJS(const std::string& script) {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (!open) return;   // shutting down: the queue will never be drained again
+    js.push(script);
     // AppCore's run loop polls OnUpdate frequently; no explicit wake needed.
 }
 
+void ODMApp::Mailbox::PostTask(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (!open) return;
+    tasks.push(std::move(fn));
+}
+
+void ODMApp::Mailbox::Close() {
+    std::lock_guard<std::mutex> lk(mtx);
+    open = false;
+    // Queued tasks capture the app; dropping them here means a task enqueued
+    // moments before the close can never run against a half-torn-down app.
+    std::queue<std::string>().swap(js);
+    std::queue<std::function<void()>>().swap(tasks);
+}
+
+void ODMApp::PostJS(const std::string& script) { mail_->PostJS(script); }
+
 void ODMApp::PostNativeTask(std::function<void()> fn) {
-    std::lock_guard<std::mutex> lk(native_tasks_mtx_);
-    native_tasks_.push(std::move(fn));
+    mail_->PostTask(std::move(fn));
 }
 
 } // namespace odm

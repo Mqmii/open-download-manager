@@ -439,6 +439,18 @@ function getFileExtension(filename) {
   return dot !== -1 ? filename.substring(dot).toUpperCase() : 'FILE';
 }
 
+// Escape a value for interpolation into an innerHTML template — both element
+// text and quoted attribute values. EVERY download field is untrusted: the
+// name can come from a remote server's Content-Disposition header (see the
+// URL probe) and the URL is whatever the page handed the extension, so markup
+// in either one would otherwise execute with access to the native bridge
+// (StartDownload/OpenFile/DeleteFile) and persist through localStorage.
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // Render Table Rows
 function renderTable() {
   const filterText = el.searchInput.value.trim().toLowerCase();
@@ -478,37 +490,46 @@ function renderTable() {
   el.tableBody.innerHTML = filtered.map(dl => {
     const isSelected = selectedId === dl.id;
     const isDownloading = dl.status === 'downloading';
-    
+    const id = escapeHtml(dl.id);
+    const name = escapeHtml(dl.name);
+    // The status also lands in a class attribute, so it is escaped before it
+    // is used as one — a status carrying a quote would otherwise break out of
+    // the attribute even though the badge text itself looks harmless.
+    const status = escapeHtml(dl.status);
+    // A percentage goes into a style attribute; force it to a real number so
+    // nothing else can ever reach the CSS.
+    const pct = Number(dl.pct) || 0;
+
     // Status text format
-    let statusHTML = `<span class="status-badge ${dl.status}">${capitalize(dl.status)}</span>`;
-    
+    let statusHTML = `<span class="status-badge ${status}">${escapeHtml(capitalize(dl.status))}</span>`;
+
     return `
-      <tr data-id="${dl.id}" class="${isSelected ? 'selected' : ''}">
-        <td class="cb-cell"><input type="checkbox" class="row-checkbox" data-id="${dl.id}" ${dl.checked ? 'checked' : ''} /></td>
+      <tr data-id="${id}" class="${isSelected ? 'selected' : ''}">
+        <td class="cb-cell"><input type="checkbox" class="row-checkbox" data-id="${id}" ${dl.checked ? 'checked' : ''} /></td>
         <td>
           <div class="file-name-cell">
             <div class="file-icon">${getFileIcon(dl.name)}</div>
             <div class="file-info">
-              <span class="file-title" title="${dl.name}">${dl.name}</span>
-              <span class="file-subtitle">${getFileExtension(dl.name)}</span>
+              <span class="file-title" title="${name}">${name}</span>
+              <span class="file-subtitle">${escapeHtml(getFileExtension(dl.name))}</span>
               ${isDownloading ? `
                 <div class="progress-wrapper">
                   <div class="progress-track">
-                    <div class="progress-fill" style="width: ${dl.pct}%"></div>
+                    <div class="progress-fill" style="width: ${pct}%"></div>
                   </div>
                   <div class="progress-stats-row">
-                    <span>${dl.downloaded || '0 B'} of ${dl.total || '0 B'} (${dl.pct.toFixed(0)}%)</span>
-                    <span>${dl.speed || ''}</span>
+                    <span>${escapeHtml(dl.downloaded || '0 B')} of ${escapeHtml(dl.total || '0 B')} (${pct.toFixed(0)}%)</span>
+                    <span>${escapeHtml(dl.speed || '')}</span>
                   </div>
                 </div>
               ` : ''}
             </div>
           </div>
         </td>
-        <td>${dl.size}</td>
+        <td>${escapeHtml(dl.size)}</td>
         <td>${statusHTML}</td>
-        <td>${dl.timeLeft || '--'}</td>
-        <td>${dl.lastModified}</td>
+        <td>${escapeHtml(dl.timeLeft || '--')}</td>
+        <td>${escapeHtml(dl.lastModified)}</td>
       </tr>
     `;
   }).join('');
@@ -1265,13 +1286,6 @@ function closeOptionsModal() {
 }
 
 // ---- Properties Modal (download details + MediaInfo media analysis) ----
-
-// Minimal HTML escaping for values injected into the properties tables.
-function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 let propModalDrag = null;
 let propMediaInfoRaw = '';       // raw Inform() text for "Copy Details"

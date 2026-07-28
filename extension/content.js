@@ -400,8 +400,15 @@
 
     if (!items.length && activeVideo) {
       // Fallback: plain <video src="https://..."> pages the sniffer missed.
-      const src = activeVideo.currentSrc || activeVideo.src || '';
-      if (/^https?:\/\//i.test(src)) {
+      // Only currentSrc, and only once the element actually has metadata: this
+      // URL is the one thing in the panel the page picks rather than something
+      // the sniffer observed on the wire, and ODM fetches it with the target
+      // domain's cookies attached. Requiring that the browser already loaded it
+      // means the request we hand over is one the page made on its own anyway —
+      // a hostile page cannot point `src` at an unrelated authenticated
+      // endpoint and have the download turn into a credentialed request.
+      const src = activeVideo.currentSrc || '';
+      if (/^https?:\/\//i.test(src) && activeVideo.readyState >= 1) {
         items = [{ url: src, kind: 'video', ext: extOf(src) || 'mp4',
                    size: 0, timeStamp: Date.now() }];
       }

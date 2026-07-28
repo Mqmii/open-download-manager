@@ -8,6 +8,7 @@
 #include <Ultralight/String.h>
 
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -157,13 +158,28 @@ private:
     // Dedicated thread owning the system-tray icon and its message loop.
     std::thread  tray_thread_;
 
-    // Pending JS to flush on the main thread.
-    std::mutex            js_queue_mtx_;
-    std::queue<std::string> js_queue_;
+    // Work handed back to the main thread. This lives in its own shared object
+    // rather than as plain members because four background jobs run detached:
+    // the URL probe, MediaInfo, the YouTube resolver and the "Open with"
+    // dialog. Nothing joins them — the dialog in particular stays open as long
+    // as the user leaves it open — so one can still be mid-flight when the
+    // window closes. Those workers capture the mailbox instead of `this`, so a
+    // late result posts into an object guaranteed to outlive the app, and
+    // Close() turns such posts into no-ops rather than a use-after-free.
+    struct Mailbox {
+        std::mutex                        mtx;
+        std::queue<std::string>           js;
+        std::queue<std::function<void()>> tasks;
+        bool                              open = true;
 
-    // Pending native callables to run on the main thread.
-    std::mutex                        native_tasks_mtx_;
-    std::queue<std::function<void()>> native_tasks_;
+        // All three are safe to call from any thread, at any time.
+        void PostJS(const std::string& script);
+        void PostTask(std::function<void()> fn);
+        // Stop accepting work and discard whatever is still queued; nothing
+        // will run it now that the main thread is on its way out.
+        void Close();
+    };
+    std::shared_ptr<Mailbox> mail_ = std::make_shared<Mailbox>();
 };
 
 } // namespace odm
