@@ -1,0 +1,54 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default (vcpkg, VS2022)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64" },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    },
+    {
+      "name": "curl-root",
+      "displayName": "Pre-built curl (CURL_ROOT)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64" },
+      "cacheVariables": {
+        "CURL_ROOT": ""
+      }
+    },
+    {
+      "name": "clion-debug",
+      "displayName": "CLion Debug (vcpkg, Ninja)",
+      "description": "For CLion: Ninja generator + vcpkg toolchain. Requires the VCPKG_ROOT environment variable (C:\\vcpkg).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    },
+    {
+      "name": "clion-release",
+      "displayName": "CLion Release (vcpkg, Ninja)",
+      "description": "For CLion: Ninja generator + vcpkg toolchain. Requires the VCPKG_ROOT environment variable (C:\\vcpkg).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default",       "configurePreset": "default" },
+    { "name": "curl-root",     "configurePreset": "curl-root" },
+    { "name": "clion-debug",   "configurePreset": "clion-debug" },
+    { "name": "clion-release", "configurePreset": "clion-release" }
+  ]
+}

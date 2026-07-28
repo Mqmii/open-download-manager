@@ -1,0 +1,2124 @@
+/* Global Styles */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-user-select: none;
+}
+
+:root {
+  /* Surfaces: soft charcoal with a cool cast rather than pure black. Each
+     step is a real elevation level — sidebar sits below the app background,
+     panels above it, cards above those. */
+  --bg-main: #15171C;
+  --bg-sidebar: #111318;
+  --bg-panel: #1B1E25;
+  --bg-card: #21252D;
+  --bg-hover: #2A2F39;
+  --border-color: rgba(255, 255, 255, 0.09);
+
+  --text-strong: #F2F4F8;
+  --text-primary: #DFE3EA;
+  --text-secondary: #9AA2B1;
+  --text-muted: #6B7482;
+
+  /* Accent: periwinkle. Light enough to carry dark text on filled buttons,
+     saturated enough to read as an accent against the cool surfaces. */
+  --accent: #7C8CFF;
+  --accent-hover: #93A0FF;
+  --accent-soft: rgba(124, 140, 255, 0.14);
+  --on-accent: #12141A;          /* text/icons drawn ON an accent fill */
+
+  /* The palette used to be monochrome, so ~18 rules still ask for
+     --purple-*. Keep the names pointing at the accent instead of touching
+     every call site. */
+  --purple-primary: var(--accent);
+  --purple-hover: var(--accent-hover);
+  --purple-translucent: var(--accent-soft);
+
+  --green: #52D9A3;
+  --danger: #F0555C;
+  --danger-hover: #D8434A;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* App Container Layout */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 24px;
+  gap: 24px;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Top Bar Styling */
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 70px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.top-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-svg {
+  width: 22px;
+  height: 22px;
+  color: var(--purple-primary);
+}
+
+.logo-text {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.nav-menu {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.nav-item {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.nav-item:hover {
+  color: var(--text-primary);
+}
+
+/* View dropdown (top nav) */
+.nav-dropdown-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.nav-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -8px;
+  width: 168px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  display: none;
+  flex-direction: column;
+  padding: 4px;
+  z-index: 1500;
+}
+
+.nav-dropdown.open {
+  display: flex;
+}
+
+/* Compact items: the context-menu sizing (40px rows, 16px icons) is too
+   heavy for a small nav dropdown. */
+.nav-dropdown .menu-item {
+  height: 30px;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.nav-dropdown .menu-item:hover {
+  color: var(--text-primary);
+}
+
+.nav-dropdown .menu-item svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.5;
+  color: var(--text-primary);
+}
+
+/* Check marks show which view toggles are active */
+.view-toggle .vm-check {
+  opacity: 0;
+}
+
+.view-toggle.on {
+  color: var(--text-primary);
+}
+
+.view-toggle.on .vm-check {
+  opacity: 1;
+}
+
+/* View toggle: compact table rows */
+body.compact-rows .downloads-table tbody tr {
+  height: 38px;
+}
+
+body.compact-rows .downloads-table td {
+  padding: 6px 16px;
+  font-size: 12px;
+}
+
+body.compact-rows .file-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+body.compact-rows .file-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+body.compact-rows .file-title {
+  font-size: 12px;
+}
+
+body.compact-rows .file-subtitle {
+  display: none;
+}
+
+body.compact-rows .status-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+/* View toggles: hide side panels */
+body.hide-disk .disk-widget {
+  display: none;
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+}
+
+/* Search Box */
+.search-box {
+  position: relative;
+  width: 280px;
+  height: 42px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  transition: border-color 150ms ease;
+}
+
+.search-box:focus-within {
+  border-color: var(--purple-primary);
+}
+
+.search-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+
+#search-input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 100%;
+  -webkit-user-select: text;
+}
+
+#search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Main Workspace Layout */
+.main-layout {
+  display: flex;
+  flex: 1;
+  gap: 24px;
+  min-height: 0; /* Important for scroll container */
+}
+
+/* Left Sidebar Styling */
+.sidebar {
+  width: 200px;
+  background-color: var(--bg-sidebar);
+  border-radius: 16px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 18px;
+  flex-shrink: 0;
+}
+
+.sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+}
+
+.group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  margin-bottom: 8px;
+  padding-left: 8px;
+}
+
+.category-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  font-weight: 500;
+  /* No hover transition: instant highlight repaints once instead of
+     ~9 frames per hover (Ultralight rasterizes on the CPU). */
+  position: relative;
+}
+
+.category-item svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.category-item.sub-item {
+  padding-left: 24px;
+  font-size: 12px;
+}
+
+.category-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.category-item.active {
+  background-color: var(--purple-translucent);
+  color: var(--text-primary);
+}
+
+.category-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background-color: var(--purple-primary);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Disk Space Widget */
+.disk-widget {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+}
+
+.disk-widget-header {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.disk-title {
+  color: var(--text-secondary);
+}
+
+.disk-pct-text {
+  color: var(--purple-primary);
+  font-weight: 600;
+}
+
+.disk-visual {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 90px;
+  height: 90px;
+}
+
+.disk-arc-svg {
+  transform: rotate(-90deg);
+}
+
+.disk-bg-circle {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.05);
+  stroke-width: 8;
+}
+
+.disk-active-circle {
+  fill: none;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 251.2;
+  /* Start empty (0% used); JS will set the real offset once it reads disk space. */
+  stroke-dashoffset: 251.2;
+  transition: stroke-dashoffset 300ms ease;
+}
+
+.disk-center-text {
+  position: absolute;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.disk-path {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Middle Content Area */
+.content-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+/* Toolbar Styling */
+.toolbar {
+  height: 64px;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.tb-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 10px;
+  min-width: 60px;
+}
+
+.tb-icon {
+  width: 20px;
+  height: 20px;
+  color: rgba(255, 255, 255, 0.7);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tb-text {
+  font-size: 11px;
+  /* Ultralight clips inline text at the line box, and the <button> UA font
+     (Arial) makes 'normal' line-height too small at 11px — the label bottoms
+     were sliced off in the .exe. An explicit line-height gives the glyphs
+     enough room in every engine. */
+  line-height: 16px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.tb-btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+}
+
+.tb-btn:hover:not(:disabled) .tb-icon {
+  color: var(--text-primary);
+}
+
+.tb-btn:hover:not(:disabled) .tb-text {
+  color: var(--text-primary);
+}
+
+.tb-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Icon-only button (no label): give it the same height as a labeled button
+   so its icon vertically aligns with the others. Labeled buttons are
+   ~52px (6px padding + 20px icon + 6px margin + ~14px text + 6px padding);
+   we match that with min-height and top-align the icon. */
+.tb-btn-icon-only {
+  min-height: 52px;
+  justify-content: flex-start;
+}
+
+/* Special Add URL Button */
+.tb-btn-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.tb-icon-wrapper {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+.tb-btn-add .tb-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--on-accent);
+  stroke-width: 3;
+}
+
+.tb-btn-add:hover:not(:disabled) .tb-icon-wrapper {
+  transform: scale(1.08);
+  background: var(--accent-hover);
+}
+
+.tb-separator {
+  width: 1px;
+  height: 32px;
+  background-color: var(--border-color);
+  margin: 0 8px;
+}
+
+/* Main Table Section */
+.table-container {
+  flex: 1;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  position: relative;
+  min-height: 0;
+}
+
+.downloads-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.downloads-table th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-panel);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.downloads-table td {
+  padding: 12px 16px;
+  font-size: 13px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+}
+
+.downloads-table tbody tr {
+  height: 56px;
+  cursor: pointer;
+}
+
+.downloads-table tbody tr:hover:not(.empty-row) {
+  background-color: var(--bg-hover);
+}
+
+.downloads-table tbody tr.selected {
+  background-color: var(--purple-translucent);
+}
+
+/* Custom Checkbox */
+/* The parent cell must show cursor:pointer because pointer-events:none on the
+   checkbox itself prevents it from displaying its own cursor. */
+.cb-cell {
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background-color: var(--bg-card);
+  border: 1.5px solid var(--border-color);
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Ultralight's WebKit swallows all JS events (click/change) on checkbox
+     inputs with -webkit-appearance:none. Disabling pointer-events lets the
+     click fall through to the parent <td>/<th>, which fires and bubbles
+     normally. JS then toggles .checked manually. */
+  pointer-events: none;
+}
+
+input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid var(--on-accent);
+  border-bottom: 2px solid var(--on-accent);
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+
+/* File name column contents */
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+.file-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.file-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.file-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.file-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Progress bar inside row */
+.progress-wrapper {
+  margin-top: 6px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progress-track {
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 150ms ease;
+}
+
+.progress-stats-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  display: inline-block;
+}
+
+.status-badge.downloading {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.status-badge.finished {
+  color: var(--green);
+  background-color: rgba(74, 222, 128, 0.08);
+}
+
+.status-badge.stopped {
+  color: var(--text-muted);
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.status-badge.failed {
+  color: var(--danger);
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+/* Empty State Styling */
+.empty-row {
+  background: none !important;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+  gap: 12px;
+  text-align: center;
+}
+
+.empty-icon {
+  width: 48px;
+  height: 48px;
+  color: var(--text-muted);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.empty-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Bottom Status Bar */
+.status-bar {
+  height: 46px;
+  background-color: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 20px;
+  flex-shrink: 0;
+}
+
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.speed-indicator-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--purple-primary);
+  display: flex;
+  align-items: center;
+}
+
+.gauge-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.status-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-right {
+  display: flex;
+  gap: 20px;
+}
+
+.speed-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.speed-arrow {
+  width: 14px;
+  height: 14px;
+  color: var(--purple-primary);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+}
+
+.speed-arrow.down {
+  color: var(--purple-primary);
+}
+
+.speed-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.speed-val {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* Custom Context Menu */
+.context-menu {
+  position: absolute;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  width: 190px;
+  /* Tight shadow: large blur radii are expensive to re-rasterize every time
+     a menu item repaints on hover. */
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  display: none;
+  flex-direction: column;
+  padding: 6px;
+  z-index: 1000;
+}
+
+.menu-item {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.menu-item svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-strong);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.menu-item:hover {
+  background-color: var(--purple-translucent);
+}
+
+.menu-separator {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 6px 8px;
+}
+
+/* Modal Dialgos: Add URL Modal overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(10, 10, 14, 0.7);
+  /* No backdrop blur: Ultralight rasterizes it on the CPU over the whole
+     viewport, which tanks modal responsiveness. */
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.modal-container {
+  width: 500px;
+  background-color: var(--bg-panel);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modalFadeIn 200ms ease;
+}
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Drag state.
+   Context for everything below: a drag in the .exe can never match a browser.
+   The bundled Ultralight is the Free edition, which caps every View at 60 FPS
+   (ULTRALIGHT_EDITION_MAX_FPS), and that cap lands on every second refresh of
+   a >60Hz display — measured 46-50 FPS on a 100Hz monitor where Chrome runs
+   the same page at 100. Painting is only ~3.4ms of each ~20ms frame, so these
+   rules cannot buy frames; they only keep a frame from tipping over the next
+   vsync boundary. */
+.modal-container.dragging {
+  /* Measured with Ultralight's frame statistics over a scripted 6s drag:
+     with the tight shadow the render sat at 40-50 FPS (spread 10), without it
+     46-49 (spread 3). Less jitter, which is the part that reads as stutter. */
+  box-shadow: none;
+  /* No effect in Ultralight (its compositor is off by default, so nothing gets
+     promoted), but it is what keeps the same drag on a browser-opened
+     index.html on its own layer. */
+  will-change: transform;
+  /* No hit-testing while the modal sits under the cursor: otherwise every
+     WM_MOUSEMOVE hit-tests the whole modal subtree and re-evaluates :hover.
+     The drag listeners live on `document`, so they still fire. */
+  pointer-events: none;
+}
+
+/* The pointer is over the backdrop mid-drag, so the move cursor lives here. */
+.modal-overlay.dragging {
+  cursor: move;
+}
+
+/* Hover/color transitions inside the modal must not tick during a drag: each
+   one keeps the animation timer (and the repaints it drives) alive. */
+.modal-container.dragging * {
+  transition: none !important;
+}
+
+/* The entry animation must never run again once a drag happened: it
+   animates `transform`, so re-enabling it on mouseup restarted it and
+   overrode the drag translate for 200ms — the modal flashed back to its
+   default spot, then snapped to where it was dropped. `.dragged` stays on
+   until the modal is reopened (reset()). */
+.modal-container.dragging,
+.modal-container.dragged {
+  animation: none;
+}
+
+.modal-header {
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 150ms ease;
+}
+
+.modal-close-btn:hover {
+  color: var(--text-primary);
+}
+
+.modal-close-btn svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.modal-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+/* Live URL probe strip (Add-Download modal): what IS this link? */
+.url-probe {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 30px;
+}
+
+.url-probe-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  background: var(--purple-translucent);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 7px;
+}
+
+.url-probe-badge:empty { display: none; }
+
+.url-probe-text {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url-probe.err .url-probe-text { color: var(--danger); }
+
+/* Info tooltip icon */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.info-tip svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  transition: color 150ms ease;
+}
+
+.info-tip:hover svg {
+  color: var(--purple-primary);
+}
+
+.info-tip-text {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  min-width: 300px;
+  max-width: 420px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  line-height: 1.4;
+  z-index: 3000;
+  transition: opacity 150ms ease, visibility 150ms ease;
+  pointer-events: none;
+}
+
+.info-tip:hover .info-tip-text {
+  visibility: visible;
+  opacity: 1;
+}
+
+.input-row {
+  display: flex;
+  gap: 10px;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  color: var(--text-primary);
+  padding: 12px 16px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 150ms ease;
+  -webkit-user-select: text;
+}
+
+.input-row input[type="text"]:focus {
+  border-color: var(--purple-primary);
+}
+
+.modal-btn {
+  padding: 10px 18px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.modal-btn-secondary {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.modal-btn-secondary svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.modal-btn-secondary:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.modal-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.modal-btn-primary:hover {
+  transform: translateY(-1px);
+  background: var(--accent-hover);
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  background-color: rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--border-color);
+}
+/* ---------------------------------------------------------------------------
+   Desktop responsiveness - fluid scaling and breakpoints
+   --------------------------------------------------------------------------- */
+
+/* Fluid scaling */
+.app-container {
+  padding: clamp(12px, 1.5vw, 24px);
+  gap: clamp(12px, 1.5vw, 24px);
+  min-width: 640px;
+  overflow-x: auto;
+}
+
+.main-layout {
+  gap: clamp(12px, 1.5vw, 24px);
+}
+
+/* Top bar: allow wrapping on narrow windows */
+.top-bar {
+  min-height: 70px;
+  height: auto;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 8px;
+}
+
+.top-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.top-right {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.nav-menu {
+  flex-wrap: wrap;
+  gap: clamp(8px, 1vw, 16px);
+}
+
+.search-box {
+  width: min(280px, 100%);
+  max-width: 280px;
+  height: 42px;
+  flex-shrink: 1;
+}
+
+/* Sidebars scale within a range */
+.sidebar {
+  width: clamp(180px, 18vw, 220px);
+  min-width: 0;
+}
+
+/* Toolbar can wrap and shrink */
+.toolbar {
+  height: auto;
+  min-height: 64px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  gap: 6px;
+}
+
+.tb-btn {
+  min-width: 52px;
+  padding: 6px 8px;
+}
+
+.tb-separator {
+  flex-shrink: 0;
+}
+
+/* Table fills the content area and handles overflow */
+.table-container {
+  overflow: auto;
+  min-width: 0;
+}
+
+.downloads-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.downloads-table th,
+.downloads-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-name-cell,
+.file-info,
+.file-title {
+  min-width: 0;
+}
+
+.file-title {
+  max-width: none;
+}
+
+/* Status bar wraps if needed */
+.status-bar {
+  height: auto;
+  min-height: 46px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  gap: 12px;
+}
+
+.status-right {
+  flex-wrap: wrap;
+}
+
+/* Modal never exceeds the viewport */
+.modal-container {
+  width: min(500px, calc(100% - 32px));
+  margin: 16px;
+}
+
+/* ---------------------------------------------------------------------------
+   Breakpoints
+   --------------------------------------------------------------------------- */
+@media (max-width: 1200px) {
+  .sidebar {
+    width: 180px;
+  }
+  .search-box {
+    max-width: 240px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .app-container {
+    padding: 16px;
+    gap: 16px;
+  }
+  .main-layout {
+    gap: 16px;
+  }
+  .sidebar {
+    width: 180px;
+    padding: 14px;
+  }
+  .downloads-table th:nth-child(5),
+  .downloads-table td:nth-child(5),
+  .downloads-table th:nth-child(6),
+  .downloads-table td:nth-child(6) {
+    display: none;
+  }
+  .tb-text {
+    font-size: 10px;
+  }
+  .tb-btn {
+    min-width: 48px;
+  }
+  .context-menu {
+    width: 170px;
+  }
+  .menu-item {
+    font-size: 11px;
+    padding: 0 10px;
+  }
+}
+
+@media (max-width: 800px) {
+  .top-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .top-right {
+    width: 100%;
+  }
+  .search-box {
+    width: 100%;
+    max-width: none;
+  }
+  .nav-menu {
+    gap: 10px;
+  }
+  .nav-item {
+    font-size: 11px;
+  }
+  .tb-text {
+    display: none;
+  }
+  .tb-btn {
+    min-width: 40px;
+    padding: 6px;
+  }
+  .tb-separator {
+    margin: 0 4px;
+  }
+  .speed-label {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    width: 160px;
+    padding: 12px;
+  }
+  .category-item span {
+    font-size: 11px;
+  }
+  .category-item.sub-item {
+    padding-left: 18px;
+    font-size: 10px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Options Modal Specific Styles
+   --------------------------------------------------------------------------- */
+
+.opt-body {
+  gap: 24px;
+}
+
+/* Wider container for the settings layout */
+.opt-container {
+  width: min(600px, calc(100% - 32px));
+}
+
+/* The Options modal is draggable by its header */
+.opt-container .modal-header {
+  cursor: move;
+}
+
+/* Settings section: header + card */
+.opt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.opt-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+}
+
+.opt-section-header svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.opt-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 4px 16px;
+}
+
+.opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 0;
+}
+
+/* Stacked variant: info on top, control below (for wide inputs) */
+.opt-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.opt-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.opt-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.opt-row-desc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.opt-row-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.opt-divider {
+  height: 1px;
+  background-color: var(--border-color);
+}
+
+/* Inputs inside a card sit on --bg-main for contrast against the card */
+.opt-card .input-row input[type="text"] {
+  background-color: var(--bg-main);
+}
+
+.opt-row-control .custom-select {
+  width: 110px;
+}
+
+.opt-row-control .custom-select-trigger {
+  background-color: var(--bg-main);
+  padding: 9px 12px;
+}
+
+/* Toggle switch — a plain div, so clicks work reliably in Ultralight
+   (checkbox inputs with -webkit-appearance:none swallow all events).
+   Its .on class is the single source of truth for the boolean state. */
+.toggle-switch {
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background-color: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  padding: 2px;
+  flex-shrink: 0;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.toggle-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.toggle-switch.on {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-switch.on .toggle-knob {
+  transform: translateX(18px);
+  background-color: var(--on-accent);
+}
+
+/* Custom select dropdown */
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+
+.custom-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  color: var(--text-primary);
+  padding: 12px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 150ms ease;
+}
+
+.custom-select-trigger:hover {
+  border-color: var(--purple-primary);
+}
+
+.custom-select.open .custom-select-trigger {
+  border-color: var(--purple-primary);
+}
+
+.custom-select-value {
+  flex: 1;
+}
+
+.custom-select-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 200ms ease;
+}
+
+.custom-select.open .custom-select-arrow {
+  transform: rotate(180deg);
+}
+
+.custom-select-options {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  display: none;
+  flex-direction: column;
+  padding: 6px;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.custom-select.dropup .custom-select-options {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.custom-select.open .custom-select-options {
+  display: flex;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.custom-select-option {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.custom-select-option:hover {
+  background-color: var(--purple-translucent);
+  color: var(--text-primary);
+}
+
+.custom-select-option.selected {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-strong);
+}
+
+/* Range slider */
+#opt-connections {
+  width: 130px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+#opt-connections::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: none;
+  transition: transform 150ms ease;
+}
+
+#opt-connections::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+#opt-connections::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+
+.range-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--purple-primary);
+  min-width: 28px;
+  text-align: center;
+}
+
+#opt-limit-speed {
+  width: 90px;
+  background-color: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-primary);
+  padding: 9px 12px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+
+#opt-limit-speed:focus {
+  border-color: var(--purple-primary);
+}
+
+#opt-limit-speed:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.field-suffix {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Hide number input spinners */
+#opt-limit-speed::-webkit-inner-spin-button,
+#opt-limit-speed::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+#opt-limit-speed[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* ---------------------------------------------------------------------------
+   Generic App Dialog (alert/confirm/prompt replacement)
+   The embedded webview does not implement native JS dialogs, so these styles
+   back the Promise-based dialog helpers in app.js. */
+.dialog-container {
+  width: min(440px, calc(100% - 32px));
+}
+
+.dialog-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-line;   /* honors \n in multi-line messages (e.g. Properties) */
+  word-break: break-word;
+}
+
+.dialog-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.dialog-input:focus {
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
+}
+
+.modal-btn-danger {
+  background: var(--danger);
+  color: var(--text-strong);
+  box-shadow: none;
+}
+
+.modal-btn-danger:hover {
+  transform: translateY(-1px);
+  background: var(--danger-hover);
+}
+
+/* ---------------------------------------------------------------------------
+   Properties Modal (download details + MediaInfo media analysis) */
+.prop-body {
+  max-height: 65vh;
+  overflow-y: auto;
+}
+
+/* Draggable like Options (shares .opt-container header cursor rule) */
+#properties-modal .modal-header {
+  cursor: move;
+}
+
+.prop-kv-row {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.prop-kv-row:last-child {
+  border-bottom: none;
+}
+
+.prop-key {
+  width: 180px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.prop-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  word-break: break-word;
+  -webkit-user-select: text;   /* allow copying individual values */
+}
+
+/* Loading / fallback note inside the media sections container */
+.prop-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 12px 4px;
+}
+
+#media-info-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ---------------------------------------------------------------------------
+   Download Detail Modal (double-click a downloading row) */
+.dd-container {
+  width: min(480px, calc(100% - 32px));
+}
+
+.dd-header {
+  cursor: move;
+  padding: 14px 18px;
+}
+
+.dd-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dd-file-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.dd-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dd-header-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Tabs strip */
+.dd-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 18px 0 18px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dd-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  padding: 9px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dd-tab svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dd-tab:hover {
+  color: var(--text-secondary);
+}
+
+.dd-tab.active {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.dd-body {
+  padding: 16px 18px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dd-info-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.dd-kv {
+  display: flex;
+  gap: 14px;
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+
+.dd-kv-key {
+  width: 130px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.dd-kv-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.dd-kv-val.yes {
+  color: var(--green);
+  font-weight: 600;
+}
+
+/* Solid fill, matching the table rows' progress bar (--text-primary tone) */
+.dd-progress-track {
+  height: 10px;
+  background-color: var(--bg-hover);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.dd-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 5px;
+}
+
+/* Part Info row: toggle on the left, Pause/Close on the right */
+.dd-part-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dd-part-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 6px 4px;
+}
+
+#dd-chevron {
+  transition: transform 150ms ease;
+}
+
+.dd-part-toggle.collapsed #dd-chevron {
+  transform: rotate(180deg);
+}
+
+.dd-part-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dd-part-actions .modal-btn {
+  padding: 7px 14px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+/* Paused state: muted per the monochrome theme (white = active only) but
+   still CLICKABLE — clicking it resumes the download. Only a truly
+   disabled button (finished/failed) loses its affordance. */
+.dd-part-actions .modal-btn.paused {
+  color: var(--text-muted);
+}
+
+.dd-part-actions .modal-btn.paused:hover {
+  color: var(--text-primary);
+}
+
+.dd-part-actions .modal-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.dd-part-actions .modal-btn:disabled:hover {
+  background-color: transparent;
+  border-color: var(--border-color);
+}
+
+/* Segment strip: one cell per chunk/part */
+.dd-part-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dd-part-info.collapsed {
+  display: none;
+}
+
+.dd-segments {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--bg-hover);
+}
+
+.dd-seg {
+  flex: 1;
+  margin-right: 1px;
+}
+
+.dd-seg:last-child {
+  margin-right: 0;
+}
+
+/* Palette-consistent segment states: green = done (matches the Finished
+   badge), white = receiving (matches the active/downloading tone), and the
+   dark track shows through for pending. */
+.dd-seg.done    { background-color: var(--green); }
+.dd-seg.active  { background-color: var(--accent); }
+.dd-seg.pending { background-color: transparent; }
+
+/* Per-part table */
+.dd-part-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.dd-part-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dd-part-table td {
+  padding: 5px 8px;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.dd-part-table tbody {
+  display: block;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.dd-part-table thead,
+.dd-part-table tbody tr {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.dd-part-table th:first-child,
+.dd-part-table td:first-child {
+  width: 36px;
+}

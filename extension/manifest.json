@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "ODM — Download Interceptor",
+  "version": "0.3.2",
+  "description": "Captures downloads and page videos and hands them to the ODM app. The ODM app must be running.",
+  "permissions": [
+    "downloads",
+    "contextMenus",
+    "storage",
+    "notifications",
+    "cookies",
+    "alarms",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.instagram.com/*",
+        "https://*.facebook.com/*"
+      ],
+      "js": [
+        "mse_probe.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ODM Bridge",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

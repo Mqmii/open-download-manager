@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open Download Manager</title>
+  <!-- Fonts are local/system only: this UI runs in an embedded offline webview,
+       so no external font CDN is referenced (see app.css font stack). -->
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Title & Navigation Bar -->
+    <header class="top-bar">
+      <div class="top-left">
+        <div class="app-logo">
+          <!-- App Logo Icon -->
+          <svg class="logo-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="8 12 12 16 16 12"></polyline>
+            <line x1="12" y1="8" x2="12" y2="16"></line>
+          </svg>
+          <span class="logo-text">Open Download Manager</span>
+        </div>
+        <nav class="nav-menu">
+          <a href="#" class="nav-item" data-action="open-downloads">Downloads</a>
+          <div class="nav-dropdown-wrap">
+            <a href="#" class="nav-item" id="nav-view">View</a>
+            <div class="nav-dropdown" id="view-menu">
+              <div class="menu-item view-toggle" data-toggle="compactRows">
+                <svg class="vm-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span>Compact Rows</span>
+              </div>
+              <div class="menu-item view-toggle" data-toggle="showDisk">
+                <svg class="vm-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span>Disk Space Widget</span>
+              </div>
+            </div>
+          </div>
+        </nav>
+      </div>
+      <div class="top-right">
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search in the List" spellcheck="false" />
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Layout -->
+    <div class="main-layout">
+      <!-- Left Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-top">
+          <!-- Categories Collapsible list -->
+          <div class="category-group">
+            <div class="group-title">
+              <span>Categories</span>
+            </div>
+            <ul class="category-list">
+              <li class="category-item active" data-category="all">
+                <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <span>All Downloads</span>
+              </li>
+              <li class="category-item sub-item" data-category="music">
+                <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                <span>Music</span>
+              </li>
+              <li class="category-item sub-item" data-category="compressed">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line><path d="M9 8h6M9 12h6M9 16h6"></path></svg>
+                <span>Compressed</span>
+              </li>
+              <li class="category-item sub-item" data-category="videos">
+                <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+                <span>Videos</span>
+              </li>
+              <li class="category-item sub-item" data-category="programs">
+                <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="15" x2="23" y2="15"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="15" x2="4" y2="15"></line></svg>
+                <span>Programs</span>
+              </li>
+              <li class="category-item sub-item" data-category="documents">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                <span>Documents</span>
+              </li>
+              <li class="category-item sub-item" data-category="apks">
+                <svg viewBox="0 0 24 24"><line x1="6" y1="12" x2="18" y2="12"></line><line x1="12" y1="6" x2="12" y2="18"></line><rect x="3" y="3" width="18" height="18" rx="2"></rect></svg>
+                <span>APKs</span>
+              </li>
+              <li class="category-item sub-item" data-category="images">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span>Images</span>
+              </li>
+            </ul>
+          </div>
+          <div class="category-group" style="margin-top: 16px;">
+            <ul class="category-list">
+              <li class="category-item" data-category="unfinished">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <span>Unfinished</span>
+              </li>
+              <li class="category-item" data-category="finished">
+                <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <span>Finished</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Bottom Sidebar Widget: Disk Space -->
+        <div class="disk-widget">
+          <div class="disk-widget-header">
+            <span class="disk-title">Disk Space</span>
+            <span class="disk-pct-text">0%</span>
+          </div>
+          <div class="disk-visual">
+            <svg class="disk-arc-svg" width="90" height="90" viewBox="0 0 100 100">
+              <defs>
+                <linearGradient id="diskGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#E5E5E5" />
+                  <stop offset="100%" stop-color="#666666" />
+                </linearGradient>
+              </defs>
+              <!-- Background Circle -->
+              <circle class="disk-bg-circle" cx="50" cy="50" r="40"></circle>
+              <!-- Active Gradient Arc -->
+              <circle class="disk-active-circle" cx="50" cy="50" r="40" stroke="url(#diskGrad)"></circle>
+            </svg>
+            <div class="disk-center-text">C:</div>
+          </div>
+          <span class="disk-path">C:\Downloads\</span>
+        </div>
+      </aside>
+
+      <!-- Middle Content Area -->
+      <main class="content-area">
+        <!-- Toolbar -->
+        <section class="toolbar">
+          <button id="tb-add-url" class="tb-btn tb-btn-add" title="Add New Download URL">
+            <div class="tb-icon-wrapper">
+              <svg viewBox="0 0 24 24" class="tb-icon"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </div>
+            <span class="tb-text">Add URL</span>
+          </button>
+          
+          <button id="tb-resume" class="tb-btn" title="Resume Selected Download" disabled>
+            <svg viewBox="0 0 24 24" class="tb-icon"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span class="tb-text">Resume</span>
+          </button>
+
+          <button id="tb-stop" class="tb-btn" title="Stop Selected Download" disabled>
+            <svg viewBox="0 0 24 24" class="tb-icon"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect></svg>
+            <span class="tb-text">Stop</span>
+          </button>
+
+          <button id="tb-stop-all" class="tb-btn" title="Stop All Downloads" disabled>
+            <svg viewBox="0 0 24 24" class="tb-icon"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
+            <span class="tb-text">Stop All</span>
+          </button>
+
+          <div class="tb-separator"></div>
+
+          <button id="tb-delete" class="tb-btn tb-btn-icon-only" title="Delete Selected Download" disabled>
+            <svg viewBox="0 0 24 24" class="tb-icon"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          </button>
+
+          <button id="tb-options" class="tb-btn" title="Options">
+            <svg viewBox="0 0 24 24" class="tb-icon"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span class="tb-text">Options</span>
+          </button>
+
+
+
+
+        </section>
+
+        <!-- Main Downloads Table -->
+        <section class="table-container">
+          <table class="downloads-table" id="downloads-table">
+            <thead>
+              <tr>
+                <th width="40" class="cb-cell"><input type="checkbox" id="th-select-all" /></th>
+                <th>Name</th>
+                <th width="100">Size</th>
+                <th width="140">Status</th>
+                <th width="110">Time Left</th>
+                <th width="160">Last Modification</th>
+              </tr>
+            </thead>
+            <tbody id="table-body">
+              <!-- Dynamically populated rows go here -->
+              <tr class="empty-row">
+                <td colspan="6">
+                  <div class="empty-state">
+                    <svg viewBox="0 0 24 24" class="empty-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    <p class="empty-title">No Downloads Found</p>
+                    <p class="empty-desc">Click "Add URL" to start a new download.</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <!-- Bottom Status Bar -->
+    <footer class="status-bar">
+      <div class="status-left">
+        <!-- Speed gauge icon -->
+        <div class="speed-indicator-icon">
+          <svg viewBox="0 0 24 24" class="gauge-svg">
+            <path d="M12 2a10 10 0 0 0-7.07 17.07 10 10 0 0 0 14.14 0A10 10 0 0 0 12 2z" stroke="currentColor" stroke-width="2" fill="none"></path>
+            <polyline points="12 6 12 12 16 14" stroke="currentColor" stroke-width="2" fill="none"></polyline>
+          </svg>
+        </div>
+        <span id="status-message" class="status-message">Ready</span>
+      </div>
+      <div class="status-right">
+        <div class="speed-stat">
+          <svg class="speed-arrow down" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+          <span class="speed-label">DL:</span>
+          <span id="stat-dl-speed" class="speed-val">0 B/s</span>
+        </div>
+
+      </div>
+    </footer>
+  </div>
+
+  <!-- Custom Context Menu -->
+  <div id="context-menu" class="context-menu">
+    <div class="menu-item" data-action="open">
+      <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+      <span>Open</span>
+    </div>
+    <div class="menu-item" data-action="open-with">
+      <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+      <span>Open With</span>
+    </div>
+    <div class="menu-item" data-action="open-folder">
+      <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      <span>Open Folder</span>
+    </div>
+    <div class="menu-item" data-action="rename">
+      <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z"></path></svg>
+      <span>Move / Rename</span>
+    </div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="redownload">
+      <svg viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+      <span>Redownload</span>
+    </div>
+    <div class="menu-item" data-action="resume">
+      <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+      <span>Resume Download</span>
+    </div>
+    <div class="menu-item" data-action="stop">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect></svg>
+      <span>Stop Download</span>
+    </div>
+    <div class="menu-item" data-action="refresh-address">
+      <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+      <span>Refresh Download Address</span>
+    </div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="add-queue">
+      <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+      <span>Add to queue</span>
+    </div>
+    <div class="menu-item" data-action="delete">
+      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+      <span>Delete From Queue</span>
+    </div>
+    <div class="menu-item" data-action="delete-from-disk">
+      <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="4" y1="22" x2="20" y2="6"></line></svg>
+      <span>Delete From Disk</span>
+    </div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="properties">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+      <span>Properties</span>
+    </div>
+  </div>
+
+  <!-- Custom Dialog: Add URL Modal -->
+  <div id="add-url-modal" class="modal-overlay">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h3 class="modal-title">Add New Download</h3>
+        <button id="modal-close" class="modal-close-btn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="field-label" for="url">Download Link (URL)</label>
+          <div class="input-row">
+            <input id="url" type="text" placeholder="Paste a direct download URL (https://...)" spellcheck="false" />
+            <button id="paste-btn" class="modal-btn modal-btn-secondary" title="Paste from clipboard">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+              <span>Paste</span>
+            </button>
+          </div>
+          <!-- Live link probe: file type / size / name, filled by UI.onUrlProbe -->
+          <div id="url-probe" class="url-probe" style="display:none;">
+            <span id="url-probe-badge" class="url-probe-badge"></span>
+            <span id="url-probe-text" class="url-probe-text"></span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="path">Save Path (Optional)</label>
+          <div class="input-row">
+            <input id="path" type="text" placeholder="Leave empty to save in default folder" spellcheck="false" />
+            <button id="browse-btn" class="modal-btn modal-btn-secondary" title="Browse location">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+              <span>Browse</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-cancel-btn" class="modal-btn modal-btn-secondary">Cancel</button>
+        <button id="start-btn" class="modal-btn modal-btn-primary">Download Now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Options Modal -->
+  <div id="options-modal" class="modal-overlay">
+    <div class="modal-container opt-container">
+      <div class="modal-header">
+        <h3 class="modal-title">Options</h3>
+        <button id="options-modal-close" class="modal-close-btn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body opt-body">
+        <!-- General -->
+        <div class="opt-section">
+          <div class="opt-section-header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+            <span>General</span>
+          </div>
+          <div class="opt-card">
+            <div class="opt-row opt-row-stacked">
+              <div class="opt-row-info">
+                <label class="opt-row-title" for="opt-download-path">Default Download Location</label>
+                <span class="opt-row-desc">New downloads are saved to this folder unless you pick another path per download.</span>
+              </div>
+              <div class="input-row">
+                <input id="opt-download-path" type="text" placeholder="C:\Users\...\Downloads" spellcheck="false" />
+                <button id="opt-browse-btn" class="modal-btn modal-btn-secondary" title="Browse location">
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  <span>Browse</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Performance -->
+        <div class="opt-section">
+          <div class="opt-section-header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>Performance</span>
+          </div>
+          <div class="opt-card">
+            <div class="opt-row">
+              <div class="opt-row-info">
+                <label class="opt-row-title" for="opt-connections">Parallel Connections</label>
+                <span class="opt-row-desc">Simultaneous connections per download. 8 is optimal; higher values may trigger server rate-limiting.</span>
+              </div>
+              <div class="opt-row-control">
+                <input id="opt-connections" type="range" min="1" max="16" value="8" />
+                <span id="opt-connections-val" class="range-value">8</span>
+              </div>
+            </div>
+            <div class="opt-divider"></div>
+            <div class="opt-row">
+              <div class="opt-row-info">
+                <span class="opt-row-title">Multi-Segment Threshold</span>
+                <span class="opt-row-desc">Files smaller than this are fetched over a single connection to skip segmenting overhead.</span>
+              </div>
+              <div class="opt-row-control">
+                <div class="custom-select" id="opt-threshold-select">
+                  <button class="custom-select-trigger" type="button">
+                    <span class="custom-select-value">10 MB</span>
+                    <svg class="custom-select-arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div class="custom-select-options">
+                    <div class="custom-select-option" data-value="1048576">1 MB</div>
+                    <div class="custom-select-option" data-value="5242880">5 MB</div>
+                    <div class="custom-select-option" data-value="10485760">10 MB</div>
+                    <div class="custom-select-option" data-value="52428800">50 MB</div>
+                    <div class="custom-select-option" data-value="104857600">100 MB</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bandwidth -->
+        <div class="opt-section">
+          <div class="opt-section-header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 0-7.07 17.07 10 10 0 0 0 14.14 0A10 10 0 0 0 12 2z"></path><polyline points="12 6 12 12 16 14"></polyline></svg>
+            <span>Bandwidth</span>
+          </div>
+          <div class="opt-card">
+            <div class="opt-row">
+              <div class="opt-row-info">
+                <span class="opt-row-title">Download Speed Limit</span>
+                <span class="opt-row-desc">Cap the total download speed to keep bandwidth free for other applications.</span>
+              </div>
+              <div class="opt-row-control">
+                <div class="toggle-switch" id="opt-limit-toggle" title="Enable speed limit"><div class="toggle-knob"></div></div>
+                <input id="opt-limit-speed" type="number" placeholder="0" disabled min="0" />
+                <span class="field-suffix">KB/s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="options-cancel-btn" class="modal-btn modal-btn-secondary">Cancel</button>
+        <button id="options-save-btn" class="modal-btn modal-btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Properties Modal: download details + MediaInfo-style media analysis -->
+  <div id="properties-modal" class="modal-overlay">
+    <div class="modal-container opt-container">
+      <div class="modal-header">
+        <h3 class="modal-title">Properties</h3>
+        <button id="properties-modal-close" class="modal-close-btn">
+          <svg viewBox="0 0 24 24" width="20" height="20"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body opt-body prop-body">
+        <!-- Download details (always shown, filled from the download record) -->
+        <div class="opt-section">
+          <div class="opt-section-header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Download</span>
+          </div>
+          <div class="opt-card" id="prop-download-card"></div>
+        </div>
+        <!-- Media analysis sections (General / Video / Audio / Text / Menu) -->
+        <div id="media-info-sections"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="prop-copy-btn" class="modal-btn modal-btn-secondary">Copy Details</button>
+        <button id="prop-close-btn" class="modal-btn modal-btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Download Detail Modal: opens on double-click of a DOWNLOADING row only.
+       Info/Settings tabs, live progress, collapsible per-part view. -->
+  <div id="dl-detail-modal" class="modal-overlay">
+    <div class="modal-container dd-container">
+      <div class="modal-header dd-header">
+        <div class="dd-title-wrap">
+          <svg class="dd-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="8 12 12 16 16 12"></polyline>
+            <line x1="12" y1="8" x2="12" y2="16"></line>
+          </svg>
+          <span class="dd-title" id="dd-title">--</span>
+        </div>
+        <div class="dd-header-btns">
+          <button id="dd-minimize" class="modal-close-btn" title="Minimize">
+            <svg viewBox="0 0 24 24" width="18" height="18"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <button id="dd-close-x" class="modal-close-btn" title="Close">
+            <svg viewBox="0 0 24 24" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="dd-tabs">
+        <button class="dd-tab active" data-tab="info">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          <span>Info</span>
+        </button>
+        <button class="dd-tab" data-tab="settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>Settings</span>
+        </button>
+      </div>
+
+      <div class="dd-body">
+        <div class="dd-pane" id="dd-pane-info">
+          <div class="dd-info-card" id="dd-info-card"></div>
+        </div>
+        <div class="dd-pane" id="dd-pane-settings" style="display:none;">
+          <div class="dd-info-card" id="dd-settings-card"></div>
+        </div>
+
+        <div class="dd-progress-track">
+          <div class="dd-progress-fill" id="dd-progress"></div>
+        </div>
+
+        <div class="dd-part-row">
+          <div class="dd-part-toggle" id="dd-part-toggle">
+            <svg id="dd-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+            <span>Part Info</span>
+          </div>
+          <div class="dd-part-actions">
+            <button id="dd-pause" class="modal-btn modal-btn-secondary">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>
+              <span>Pause</span>
+            </button>
+            <button id="dd-close" class="modal-btn modal-btn-secondary">Close</button>
+          </div>
+        </div>
+
+        <div class="dd-part-info" id="dd-part-info">
+          <div class="dd-segments" id="dd-segments"></div>
+          <table class="dd-part-table">
+            <thead>
+              <tr><th>#</th><th>Status</th><th>Downloaded</th><th>Total</th></tr>
+            </thead>
+            <tbody id="dd-part-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic App Dialog: replaces native alert()/confirm()/prompt(), which
+       the embedded webview does not implement (they silently no-op). -->
+  <div id="app-dialog" class="modal-overlay">
+    <div class="modal-container dialog-container">
+      <div class="modal-header">
+        <h3 class="modal-title" id="dialog-title">Dialog</h3>
+      </div>
+      <div class="modal-body">
+        <p id="dialog-message" class="dialog-message"></p>
+        <input id="dialog-input" type="text" class="dialog-input" spellcheck="false" style="display:none;" />
+      </div>
+      <div class="modal-footer" id="dialog-buttons"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

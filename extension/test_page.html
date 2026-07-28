@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<!-- Temporary smoke-test page: runs content.js with a mocked chrome API.
+     Unrelated to the real extension; only for verifying the panel UI. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>ODM Panel Smoke Test</title>
+<style>
+  body { margin:0; background:#111; display:flex; align-items:center;
+         justify-content:center; height:100vh; }
+  video { width:640px; height:360px; background:#000; }
+</style>
+<script>
+  // chrome.* stub — the minimum surface content.js expects
+  window.chrome = {
+    storage: {
+      local: { get: (d, cb) => cb({ captureEnabled: true }) },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      sendMessage: (msg) => {
+        if (msg.t === 'ODM_MEDIA_QUERY') return Promise.resolve({ items: [
+          { url: 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4',
+            kind: 'video', ext: 'mp4', size: 1055736, timeStamp: Date.now() },
+          { url: 'https://cdn.example.com/hls/master.m3u8',
+            kind: 'hls', ext: 'm3u8', size: 0, timeStamp: Date.now() - 1000 }
+        ]});
+        if (msg.t === 'ODM_MEDIA_DOWNLOAD') return Promise.resolve({ ok: true });
+        return Promise.resolve({});
+      },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+</head>
+<body>
+<video src="https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4"
+       controls muted autoplay loop></video>
+<script src="content.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+# Build output
+build/
+out/
+x64/
+Debug/
+Release/
+
+# vcpkg
+vcpkg_installed/
+
+# IDE
+.vs/
+.vscode/
+*.user
+CMakeSettings.json
+
+# Ultralight SDK is provided locally; keep it out of any future git
+ultralight-sdk/
+
+# Downloaded files and the sidecars the engines leave beside them.
+# (.gitignore has no trailing comments, so these stay on their own lines.)
+downloads/
+*.part
+# multi-segment resume bitmap
+*.odmprog
+# HLS per-track resume state + segment workspace
+*.hlsmeta
+*.hlsparts/
+# video/audio track temps awaiting the mux
+*.vtrk
+*.atrk
+# regenerated per run, still a local secret
+bridge.token
+# only written when ODM_CONSOLE_LOG=1
+odm-console.log
+
+# IDE / editor project files
+.idea/
+
+# Local working notes (never published)
+.workbuddy-ai/
+BUG_REPORT.md
+
+# CLion writes its own .gitignore inside these, but do not depend on it
+cmake-build-*/
+
+# History backups must never land back in the repo
+*.bundle
+
+# OS / editor litter (this tree lives inside OneDrive)
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# Only used to run extension/test_sniffer.js
+node_modules/

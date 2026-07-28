@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>ODM Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 280px;
+      font-family: "Segoe UI", Inter, sans-serif;
+      background: #18181f;
+      color: #e8e8ef;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .header img { width: 28px; height: 28px; }
+    .header h1 { font-size: 15px; font-weight: 600; }
+    .header .version { font-size: 11px; color: #8a8a99; font-weight: 400; }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #22222c;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    .dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #666;
+      flex-shrink: 0;
+    }
+    .dot.on  { background: #3ddc84; box-shadow: 0 0 6px #3ddc84aa; }
+    .dot.off { background: #ff5c5c; box-shadow: 0 0 6px #ff5c5caa; }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #22222c;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    .switch { position: relative; width: 36px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0;
+      background: #3a3a48;
+      border-radius: 20px;
+      transition: .2s;
+      cursor: pointer;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 14px; height: 14px;
+      left: 3px; top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: .2s;
+    }
+    .switch input:checked + .slider { background: #6a5cff; }
+    .switch input:checked + .slider::before { transform: translateX(16px); }
+
+    .hint {
+      font-size: 11px;
+      color: #8a8a99;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon128.png" alt="ODM" />
+    <h1>ODM Bridge <span class="version">v0.1</span></h1>
+  </div>
+
+  <div class="status-row">
+    <span id="status-dot" class="dot"></span>
+    <span id="status-text">Checking…</span>
+  </div>
+
+  <div class="toggle-row">
+    <span>Capture downloads</span>
+    <label class="switch">
+      <input type="checkbox" id="capture-toggle" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="toggle-row">
+    <span>Capture videos (panel)</span>
+    <label class="switch">
+      <input type="checkbox" id="video-toggle" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="status-row">
+    <span>🎬</span>
+    <span id="media-count">Scanning page…</span>
+  </div>
+
+  <p class="hint">
+    While capture is on, browser downloads are automatically handed over to
+    the ODM app; the <b>Download</b> panel that appears when you hover a video
+    lets you send page videos to ODM as well. The ODM app must be running for
+    the takeover to work.
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
