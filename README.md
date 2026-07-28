@@ -73,6 +73,13 @@ cookies, referrer and User-Agent that made it work in the browser — the reason
 a link that needs a session still downloads correctly outside it. A page video
 is offered through a floating panel over the player.
 
+![Download panel over a video player](docs/screenshot-extension.png)
+
+The panel names what you actually get: a plain file by size, an HLS master as
+"video + audio" with its resolution, and a silent CMAF track labelled as such,
+so a stream is never handed over as if it were a finished file. Clicking it
+sends the URL to ODM, which opens its Add-URL dialog prefilled.
+
 **Picking the right video.** On sites that stream through Media Source
 Extensions, every `<video>` carries a `blob:` source and a feed keeps a dozen
 unrelated clips buffered at once, so nothing in the network traffic says which
