@@ -759,6 +759,13 @@ input[type="checkbox"]:checked::after {
   background-color: rgba(74, 222, 128, 0.08);
 }
 
+/* Waiting for the engine, which runs one job at a time. Deliberately dimmer
+   than .downloading: nothing is happening on this row yet. */
+.status-badge.queued {
+  color: var(--text-secondary);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
 .status-badge.stopped {
   color: var(--text-muted);
   background-color: rgba(255, 255, 255, 0.04);

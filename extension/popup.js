@@ -8,6 +8,13 @@ const text   = document.getElementById('status-text');
 const toggle = document.getElementById('capture-toggle');
 const videoToggle = document.getElementById('video-toggle');
 
+// The extension's own version, from the manifest. It used to be typed into the
+// header by hand, which meant the popup showed a number that had been wrong for
+// several releases. The app's version is a different number and is reported
+// separately by refreshStatus().
+document.getElementById('ext-version').textContent =
+  'v' + chrome.runtime.getManifest().version;
+
 async function refreshStatus() {
   try {
     const r = await fetch(PING_URL, { cache: 'no-store' });

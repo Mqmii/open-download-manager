@@ -11,11 +11,6 @@ let activeCategory = 'all';
 // A FIFO, not a single slot: it used to be one variable, so queueing a third
 // download overwrote the second and that row sat on "Waiting..." forever.
 let pendingStarts = [];
-// Request context (cookies/referrer/UA/filename) captured by the browser
-// extension via UI.onExternalDownload. Consumed by the next startNewDownload()
-// and attached to the new row as .ctx. NEVER persisted to localStorage
-// (saveData strips it) — it contains session cookies.
-let pendingContext = null;
 // Throttle localStorage writes during high-frequency progress ticks.
 let lastSaveTs = 0;
 
@@ -289,9 +284,12 @@ function loadData() {
   if (data) {
     try {
       downloads = JSON.parse(data).filter(dl => dl && dl.id && !dl.id.startsWith('dl_demo'));
-      // Reset any active downloading state to stopped on load, since app restarted
+      // Reset any active downloading state to stopped on load, since app
+      // restarted. A queued row is reset too: the queue itself only lives in
+      // memory, so a row left as "queued" would wait for a turn that can
+      // never come.
       downloads.forEach(dl => {
-        if (dl.status === 'downloading') {
+        if (dl.status === 'downloading' || dl.status === 'queued') {
           dl.status = 'stopped';
           dl.timeLeft = '--';
           dl.speed = '';
@@ -372,9 +370,12 @@ function cancelRetry(dl) {
   if (dl._retryCountdown) { clearInterval(dl._retryCountdown); dl._retryCountdown = null; }
 }
 
-// Kick off (or queue) a download for the given row. The engine runs one job
-// at a time, so if another is active we stop it and remember this request;
-// UI.onComplete starts the queued one once the engine is free.
+// Kick off (or queue) a download for the given row. The engine runs one job at
+// a time, so a request that arrives while another job is live waits its turn:
+// the running download is left alone and UI.onComplete starts the next queued
+// row once the engine is free. Adding a second file must never interrupt the
+// first — stopping the active job here meant that starting five parts of an
+// archive left four of them stopped and only the last one running.
 function requestStart(dl) {
   const nativeAvailable = typeof StartDownload === 'function';
   const active = downloads.find(d => d.status === 'downloading' && d.id !== dl.id);
@@ -386,16 +387,47 @@ function requestStart(dl) {
     const entry = { id: dl.id, url: dl.url, path: dl.path, ctx: dl.ctx || null };
     if (queued) Object.assign(queued, entry);
     else pendingStarts.push(entry);
-    dl.timeLeft = 'Waiting...';
-    if (typeof StopDownload === 'function') StopDownload();
+    // Its own status, not "downloading": the row is genuinely doing nothing
+    // yet, and calling it downloading made the table (and the toolbar) lie.
+    dl.status = 'queued';
+    dl.timeLeft = 'Queued';
+    dl.speed = '';
     return;
   }
 
+  dl.status = 'downloading';
   if (nativeAvailable) {
     StartDownload(dl.url, dl.path, dl.id, dl.ctx ? JSON.stringify(dl.ctx) : '');
   } else {
     simulateMockDownload(dl.id);
   }
+}
+
+// Hand the engine the next queued row, if any. Called whenever the engine goes
+// idle. Rows the user removed, stopped or dequeued meanwhile are skipped, and
+// the queue keeps the order the user added them in.
+function startNextQueued() {
+  while (pendingStarts.length) {
+    const next = pendingStarts.shift();
+    const ndl = downloads.find(d => d.id === next.id);
+    if (!ndl || ndl.status !== 'queued') continue;
+    ndl.status = 'downloading';
+    ndl.timeLeft = 'Connecting...';
+    if (typeof StartDownload === 'function') {
+      StartDownload(next.url, next.path, next.id,
+                    next.ctx ? JSON.stringify(next.ctx) : '');
+    } else {
+      simulateMockDownload(next.id);
+    }
+    return true;
+  }
+  return false;
+}
+
+// Drop a row from the queue (it was stopped, removed or restarted).
+function dequeue(id) {
+  const i = pendingStarts.findIndex(q => q.id === id);
+  if (i !== -1) pendingStarts.splice(i, 1);
 }
 
 // Patch only the active row's progress bar/labels instead of rebuilding the
@@ -541,6 +573,7 @@ function renderTable() {
 function updateToolbarState() {
   const selected = downloads.find(dl => dl.id === selectedId);
   const activeDl = downloads.find(dl => dl.status === 'downloading');
+  const anyQueued = downloads.some(dl => dl.status === 'queued');
   const anyChecked = downloads.some(dl => dl.checked);
 
   // Trash is active when a row is highlighted OR any rows are ticked via
@@ -548,7 +581,8 @@ function updateToolbarState() {
   el.tbDelete.disabled = !(selected || anyChecked);
 
   if (selected) {
-    if (selected.status === 'downloading') {
+    if (selected.status === 'downloading' || selected.status === 'queued') {
+      // Stop on a queued row means "give up my place in the queue".
       el.tbStop.disabled = false;
       el.tbResume.disabled = true;
     } else if (selected.status === 'stopped' || selected.status === 'failed') {
@@ -564,7 +598,9 @@ function updateToolbarState() {
     el.tbStop.disabled = true;
   }
 
-  el.tbStopAll.disabled = !activeDl;
+  // "Stop all" also clears the queue, so it stays available when nothing is
+  // running yet but rows are waiting.
+  el.tbStopAll.disabled = !activeDl && !anyQueued;
 }
 
 // Keep the header "select all" checkbox in sync with the row checkboxes:
@@ -1050,14 +1086,12 @@ function requestUrlProbe() {
   // A YouTube watch page is HTML, not a file: probing it would report
   // "Web page · 200 KB", which is a lie about what the user is going to get.
   // The real name and size only exist after yt-dlp has resolved the page.
-  if ((pendingContext && pendingContext.type === 'ytdlp') || isYouTubeUrl(url)) {
+  if (isYouTubeUrl(url)) {
     el.probeBox.style.display = 'flex';
     el.probeBox.classList.remove('err');
     el.probeBadge.textContent = 'YT';
-    const h = pendingContext && pendingContext.height;
-    el.probeText.textContent = 'YouTube video  ·  ' +
-      (h ? h + 'p with audio' : 'best quality with audio') +
-      '  ·  resolved on start';
+    el.probeText.textContent =
+      'YouTube video  ·  best quality with audio  ·  resolved on start';
     return;
   }
   const id = 'probe_' + (++probeSeq);
@@ -1066,10 +1100,11 @@ function requestUrlProbe() {
   el.probeBox.classList.remove('err');
   el.probeBadge.textContent = '';
   el.probeText.textContent = 'Checking link…';
-  // Reuse the captured browser context (cookies/UA/referrer): CDN links like
-  // Instagram's answer 403 without it.
-  const ctx = pendingContext || {};
-  ProbeUrl(url, id, ctx.cookies || '', ctx.referrer || '', ctx.userAgent || '');
+  // No browser context here by design: the probe only runs for the manual
+  // Add-Download modal, and a URL the user typed carries no session of ours.
+  // Links handed over by the extension bring their own cookies/UA/referrer and
+  // go straight to the engine without being probed.
+  ProbeUrl(url, id, '', '', '');
 }
 
 function scheduleUrlProbe() {
@@ -1598,9 +1633,8 @@ function setupDownloadDetailListeners() {
     } else if (dl.status === 'stopped') {
       cancelRetry(dl);
       dl._retryCount = 0;
-      dl.status = 'downloading';
       dl.timeLeft = 'Resuming...';
-      requestStart(dl);           // queues behind any active job
+      requestStart(dl);           // sets the status: running, or queued
     } else {
       return;                     // finished/failed: nothing to toggle
     }
@@ -1848,41 +1882,35 @@ async function handleContextMenuAction(action) {
   }
 }
 
-// Trigger start download from modal input
-function startNewDownload() {
-  const url = el.urlInput.value.trim();
-  if (!url) {
-    uiAlert('Add New Download', 'Please enter a valid download link URL.');
-    return;
-  }
-
-  // Derive name: the probe's Content-Disposition filename beats the URL
-  // basename (CDN links are hashed noise); an extension-provided filename
-  // still wins on the native side via the request context.
-  let name = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'download.bin';
-  if (lastProbe && lastProbe.forUrl === url && lastProbe.filename &&
-      !(pendingContext && pendingContext.filename)) {
-    name = lastProbe.filename;
-  }
+// Create a row for `url`, put it on the list and hand it to the engine (or the
+// queue). Shared by the Add-Download modal and the browser hand-off so both
+// produce an identical record — the only differences are where the name and
+// the save path come from.
+//
+// `preferredName` wins when given; otherwise the URL basename is used.
+// `ctx` is the one-shot request context from the extension, or null.
+function addDownload(url, savePath, ctx, preferredName) {
+  let name = preferredName ||
+             url.substring(url.lastIndexOf('/') + 1).split('?')[0] ||
+             'download.bin';
   if (!name.includes('.')) name += '.bin';
   // A watch page has no file name at all ("watch" -> "watch.bin"). The native
   // side replaces this with the video title through UI.onPath as soon as
   // yt-dlp has resolved the page; until then, say what is happening.
   if (isYouTubeUrl(url)) name = 'YouTube video…';
-  
+
   // The Options default folder is a DIRECTORY by definition — mark it with
   // a trailing separator so the native side still treats it as one (and
   // recreates it) even when the user deleted the folder from disk.
-  let savePath = el.pathInput.value.trim();
   if (!savePath && optionsCache.downloadPath) {
     savePath = optionsCache.downloadPath.replace(/[\\/]+$/, '') + '\\';
   }
-  
+
   const newDl = {
     id: 'dl_' + Date.now(),
     name: name,
     url: url,
-    path: savePath,
+    path: savePath || '',
     size: 'Calculating...',
     status: 'downloading',
     pct: 0,
@@ -1892,43 +1920,58 @@ function startNewDownload() {
     timeLeft: 'Connecting...',
     lastModified: new Date().toLocaleString()
   };
-
-  // Attach a browser-captured request context (cookies/referrer/UA/filename),
-  // if one was delivered by the extension. One-shot: consumed here.
-  if (pendingContext) {
-    newDl.ctx = pendingContext;
-    pendingContext = null;
-  }
+  if (ctx) newDl.ctx = ctx;
 
   downloads.unshift(newDl);
   selectedId = newDl.id;
-  
+
+  // Start (or queue behind any active job). Events route back by id. This runs
+  // before the redraw so a row that lands in the queue is drawn as "Queued"
+  // straight away instead of claiming to be downloading.
+  requestStart(newDl);
+
   saveData();
-  closeModal();
   renderTable();
   updateToolbarState();
-  
-  // Start (or queue behind any active job). Events route back by id.
-  requestStart(newDl);
+  return newDl;
+}
+
+// Trigger start download from modal input
+function startNewDownload() {
+  const url = el.urlInput.value.trim();
+  if (!url) {
+    uiAlert('Add New Download', 'Please enter a valid download link URL.');
+    return;
+  }
+
+  // The probe's Content-Disposition filename beats the URL basename, which for
+  // a CDN link is hashed noise.
+  const preferred = (lastProbe && lastProbe.forUrl === url && lastProbe.filename)
+    ? lastProbe.filename : '';
+
+  addDownload(url, el.pathInput.value.trim(), null, preferred);
+  closeModal();
 }
 
 // Action button: resume selected
 function resumeSelected() {
   const selected = downloads.find(dl => dl.id === selectedId);
-  if (!selected || selected.status === 'downloading' || selected.status === 'finished') return;
+  if (!selected || selected.status === 'downloading' ||
+      selected.status === 'queued' || selected.status === 'finished') return;
 
   // Cancel any pending auto-retry and reset backoff (manual resume = fresh start)
   cancelRetry(selected);
   selected._retryCount = 0;
 
-  selected.status = 'downloading';
+  // Start (or queue behind any active job). Events route back by id.
+  // requestStart sets the status — running or queued — so it has to happen
+  // before the redraw, or the row keeps showing "Stopped" until the next tick.
   selected.timeLeft = 'Resuming...';
+  requestStart(selected);
+
   saveData();
   renderTable();
   updateToolbarState();
-
-  // Start (or queue behind any active job). Events route back by id.
-  requestStart(selected);
 }
 
 // Action button: stop selected
@@ -1940,8 +1983,15 @@ function stopSelected() {
   cancelRetry(selected);
   selected._retryCount = 0;
 
-  // Allow stopping a failed download (cancels its auto-retry)
-  if (selected.status !== 'downloading' && selected.status !== 'failed') return;
+  // Allow stopping a failed download (cancels its auto-retry) or a row that is
+  // only waiting in the queue.
+  if (selected.status !== 'downloading' && selected.status !== 'failed' &&
+      selected.status !== 'queued') return;
+
+  // A queued row owns nothing in the engine: drop it from the queue and leave
+  // whatever is actually running alone.
+  const wasQueued = selected.status === 'queued';
+  dequeue(selected.id);
 
   selected.status = 'stopped';
   selected.timeLeft = '--';
@@ -1949,8 +1999,8 @@ function stopSelected() {
   saveData();
   renderTable();
   updateToolbarState();
-  
-  if (typeof StopDownload === 'function') {
+
+  if (!wasQueued && typeof StopDownload === 'function') {
     StopDownload();
   }
 }
@@ -1962,16 +2012,19 @@ function stopAllDownloads() {
     cancelRetry(dl);
     dl._retryCount = 0;
 
-    if (dl.status === 'downloading') {
+    if (dl.status === 'downloading' || dl.status === 'queued') {
       dl.status = 'stopped';
       dl.timeLeft = '--';
       dl.speed = '';
     }
   });
+  // "Stop all" means the queue too, or the next row would start the moment the
+  // running one reports back that it stopped.
+  pendingStarts = [];
   saveData();
   renderTable();
   updateToolbarState();
-  
+
   if (typeof StopDownload === 'function') {
     StopDownload();
   }
@@ -1991,7 +2044,9 @@ function getDeleteTargets() {
 function deleteRows(targets, fromDisk) {
   if (!targets || targets.length === 0) return;
 
-  // Stop an in-progress download before removing its entry.
+  // Stop an in-progress download before removing its entry, and take any
+  // deleted row out of the queue so its turn never comes up.
+  targets.forEach(dl => dequeue(dl.id));
   if (targets.some(dl => dl.status === 'downloading')) {
     if (typeof StopDownload === 'function') StopDownload();
   }
@@ -2100,8 +2155,11 @@ window.UI = {
   // parseFloat() results produced a garbage ETA).
   onProgress(id, pct, downloaded, total, activeParts, speed,
              downloadedBytes, totalBytes, speedBps) {
-    const dl = (id && downloads.find(d => d.id === id)) ||
-               downloads.find(d => d.status === 'downloading');
+    // Route by id ONLY, for the same reason onComplete does: the old fallback
+    // ("first row that is downloading") painted one job's progress onto an
+    // unrelated row. With a queue there are now several live rows, so it would
+    // misfire more often, not less.
+    const dl = id ? downloads.find(d => d.id === id) : null;
 
     if (dl) {
       if (dl.status !== 'downloading') dl.status = 'downloading';
@@ -2201,21 +2259,11 @@ window.UI = {
     el.dlSpeed.textContent = '0 B/s';
     updateDiskWidget();
 
-    // The engine is now free: launch any download that was queued behind this
-    // one (the Stop->Start race fix).
-    // Take the first queued job whose row still wants to run: rows the user
-    // removed or stopped meanwhile are dropped, and the queue keeps its order.
-    while (pendingStarts.length) {
-      const next = pendingStarts.shift();
-      const ndl = downloads.find(d => d.id === next.id);
-      if (!ndl || ndl.status !== 'downloading') continue;
-      if (typeof StartDownload === 'function') {
-        StartDownload(next.url, next.path, next.id,
-                      next.ctx ? JSON.stringify(next.ctx) : '');
-      } else {
-        simulateMockDownload(next.id);
-      }
-      break;
+    // The engine is now free: hand it the next row waiting in the queue.
+    if (startNextQueued()) {
+      saveData();
+      renderTable();
+      updateToolbarState();
     }
   },
 
@@ -2273,7 +2321,7 @@ window.UI = {
     if (headersJson) {
       try { headers = JSON.parse(headersJson) || {}; } catch (e) { headers = {}; }
     }
-    pendingContext = {
+    const ctx = {
       filename: filename || '',
       referrer: referrer || '',
       cookies: cookies || '',
@@ -2288,14 +2336,21 @@ window.UI = {
       // Empty means best available.
       height: height || ''
     };
-    openModal();              // also clears url/path inputs
-    el.urlInput.value = url;
-    // pathInput stays empty on purpose: the native side saves to the default
-    // folder and uses `filename` from the context for the final name.
-    requestUrlProbe();        // show type/size before the user commits
-    showStatusToast(type === 'ytdlp'
-      ? 'YouTube video captured. Press "Download Now" to start.'
-      : 'Download captured from browser. Press "Download Now" to start.');
+
+    // Start straight away instead of pre-filling the Add-Download modal. The
+    // extension cancels — and erases — Chrome's own download the moment the
+    // bridge answers 200, so anything short of actually accepting the job here
+    // lost the download outright if the user closed the modal. The decision to
+    // download was already made in the browser; this is a hand-off, not a
+    // prompt. No save path is passed: the default folder is used and the final
+    // name comes from `filename` in the context, on the native side.
+    addDownload(url, '', ctx, filename || '');
+
+    const queued = downloads[0] && downloads[0].status === 'queued';
+    showStatusToast(queued
+      ? 'Added to the queue — it starts when the current download finishes.'
+      : (type === 'ytdlp' ? 'YouTube video download started.'
+                          : 'Download started.'));
   }
 };
 
