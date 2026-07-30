@@ -1,121 +1,231 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>ODM Bridge</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 280px;
-      font-family: "Segoe UI", Inter, sans-serif;
-      background: #18181f;
-      color: #e8e8ef;
-      padding: 16px;
+    /* The palette is unchanged from the first version of this popup; it is
+       only named here so a colour lives in exactly one place. */
+    :root {
+      --bg: #18181f;
+      --card: #22222c;
+      --card-hover: #282833;
+      --line: rgba(255, 255, 255, 0.07);
+      --text: #e8e8ef;
+      --muted: #8a8a99;
+      --accent: #6a5cff;
+      --track: #3a3a48;
+      --on: #3ddc84;
+      --off: #ff5c5c;
     }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 300px;
+      font-family: "Segoe UI", Inter, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- header ---------------------------------------------------------- */
     .header {
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-bottom: 14px;
+      gap: 9px;
+      margin-bottom: 12px;
     }
-    .header img { width: 28px; height: 28px; }
-    .header h1 { font-size: 15px; font-weight: 600; }
-    .header .version { font-size: 11px; color: #8a8a99; font-weight: 400; }
+    .header img { width: 24px; height: 24px; border-radius: 5px; }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    /* A chip rather than loose text: it stops reading as part of the title. */
+    .version {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      background: var(--card);
+      border-radius: 5px;
+      padding: 3px 6px;
+      letter-spacing: 0.02em;
+    }
 
-    .status-row {
+    /* ---- connection status ----------------------------------------------- */
+    /* The one thing that decides whether any of this works, so it carries a
+       tinted edge instead of looking like every other row. :has() lets the
+       card follow the dot's state without popup.js knowing about it. */
+    .status {
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: #22222c;
-      border-radius: 8px;
-      padding: 10px 12px;
-      margin-bottom: 12px;
+      gap: 9px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 11px 12px;
+      margin-bottom: 14px;
       font-size: 13px;
+      font-weight: 500;
+    }
+    .status:has(.dot.on) {
+      border-color: rgba(61, 220, 132, 0.28);
+      background: linear-gradient(rgba(61, 220, 132, 0.06), rgba(61, 220, 132, 0.06)), var(--card);
+    }
+    .status:has(.dot.off) {
+      border-color: rgba(255, 92, 92, 0.28);
+      background: linear-gradient(rgba(255, 92, 92, 0.06), rgba(255, 92, 92, 0.06)), var(--card);
     }
     .dot {
-      width: 9px; height: 9px;
+      width: 8px; height: 8px;
       border-radius: 50%;
       background: #666;
       flex-shrink: 0;
     }
-    .dot.on  { background: #3ddc84; box-shadow: 0 0 6px #3ddc84aa; }
-    .dot.off { background: #ff5c5c; box-shadow: 0 0 6px #ff5c5caa; }
+    .dot.on  { background: var(--on);  box-shadow: 0 0 0 3px rgba(61, 220, 132, 0.15); }
+    .dot.off { background: var(--off); box-shadow: 0 0 0 3px rgba(255, 92, 92, 0.15); }
 
-    .toggle-row {
+    /* ---- settings group --------------------------------------------------- */
+    /* One card holding both switches, split by a hairline. Two separate cards
+       made them look like unrelated features. */
+    .group {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      background: #22222c;
-      border-radius: 8px;
-      padding: 10px 12px;
-      margin-bottom: 12px;
-      font-size: 13px;
+      gap: 12px;
+      padding: 11px 12px;
+      transition: background .15s;
     }
-    .switch { position: relative; width: 36px; height: 20px; }
-    .switch input { opacity: 0; width: 0; height: 0; }
+    .row + .row { border-top: 1px solid var(--line); }
+    .row:hover { background: var(--card-hover); }
+
+    .row-text { flex: 1; min-width: 0; }
+    .row-title {
+      font-size: 13px;
+      font-weight: 500;
+      display: block;
+    }
+    /* Says what the switch actually does. "Capture videos (panel)" left people
+       guessing whether turning it off also stopped the sniffer. */
+    .row-desc {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.35;
+      margin-top: 2px;
+      display: block;
+    }
+
+    .switch { position: relative; width: 34px; height: 19px; flex-shrink: 0; }
+    .switch input {
+      position: absolute; inset: 0;
+      opacity: 0;
+      margin: 0;
+      cursor: pointer;
+    }
     .slider {
       position: absolute; inset: 0;
-      background: #3a3a48;
-      border-radius: 20px;
-      transition: .2s;
-      cursor: pointer;
+      background: var(--track);
+      border-radius: 19px;
+      transition: background .2s;
+      pointer-events: none;
     }
     .slider::before {
       content: "";
       position: absolute;
-      width: 14px; height: 14px;
+      width: 13px; height: 13px;
       left: 3px; top: 3px;
       background: #fff;
       border-radius: 50%;
-      transition: .2s;
+      transition: transform .2s;
     }
-    .switch input:checked + .slider { background: #6a5cff; }
-    .switch input:checked + .slider::before { transform: translateX(16px); }
+    .switch input:checked + .slider { background: var(--accent); }
+    .switch input:checked + .slider::before { transform: translateX(15px); }
+    /* Keyboard users had no way to see where they were. */
+    .switch input:focus-visible + .slider {
+      box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+    }
+
+    /* ---- media on this page ------------------------------------------------ */
+    .media {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 12px;
+      border: 1px dashed var(--line);
+      border-radius: 9px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .media svg { width: 14px; height: 14px; flex-shrink: 0; }
 
     .hint {
       font-size: 11px;
-      color: #8a8a99;
+      color: var(--muted);
       line-height: 1.5;
     }
+    .hint b { color: var(--text); font-weight: 600; }
   </style>
 </head>
 <body>
   <div class="header">
-    <img src="icons/icon128.png" alt="ODM" />
-    <h1>ODM Bridge <span class="version" id="ext-version"></span></h1>
+    <img src="icons/icon128.png" alt="" />
+    <h1>ODM Bridge</h1>
+    <span class="version" id="ext-version"></span>
   </div>
 
-  <div class="status-row">
+  <div class="status">
     <span id="status-dot" class="dot"></span>
     <span id="status-text">Checking…</span>
   </div>
 
-  <div class="toggle-row">
-    <span>Capture downloads</span>
-    <label class="switch">
-      <input type="checkbox" id="capture-toggle" />
-      <span class="slider"></span>
-    </label>
+  <div class="group">
+    <div class="row">
+      <span class="row-text">
+        <label class="row-title" for="capture-toggle">Capture downloads</label>
+        <span class="row-desc">Browser downloads are handed to ODM instead.</span>
+      </span>
+      <span class="switch">
+        <input type="checkbox" id="capture-toggle" />
+        <span class="slider"></span>
+      </span>
+    </div>
+
+    <div class="row">
+      <span class="row-text">
+        <label class="row-title" for="video-toggle">Video download panel</label>
+        <span class="row-desc">Shows a Download button over videos you hover.</span>
+      </span>
+      <span class="switch">
+        <input type="checkbox" id="video-toggle" />
+        <span class="slider"></span>
+      </span>
+    </div>
   </div>
 
-  <div class="toggle-row">
-    <span>Capture videos (panel)</span>
-    <label class="switch">
-      <input type="checkbox" id="video-toggle" />
-      <span class="slider"></span>
-    </label>
-  </div>
-
-  <div class="status-row">
-    <span>🎬</span>
+  <div class="media">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+      <line x1="7" y1="2" x2="7" y2="22"></line>
+      <line x1="17" y1="2" x2="17" y2="22"></line>
+      <line x1="2" y1="12" x2="22" y2="12"></line>
+    </svg>
     <span id="media-count">Scanning page…</span>
   </div>
 
   <p class="hint">
-    While capture is on, browser downloads are automatically handed over to
-    the ODM app; the <b>Download</b> panel that appears when you hover a video
-    lets you send page videos to ODM as well. The ODM app must be running for
-    the takeover to work.
+    The ODM app must be running for any of this to work. Page videos are sent
+    with the <b>Download</b> button that appears when you hover them.
   </p>
 
   <script src="popup.js"></script>

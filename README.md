@@ -224,10 +224,23 @@ token, so nothing outside the machine can queue a download.
 
 ## Licence
 
-Licensed under the Apache License 2.0 — see [`LICENSE`](LICENSE).
+Licensed under the GNU Affero General Public License v3.0 — see
+[`LICENSE`](LICENSE).
+
+In short: fork it, change it, ship it. If you distribute your version, or run
+it as a service, your version has to be open source under the same licence.
+Closed-source forks are not permitted.
+
+`LICENSE` also carries an **additional permission under AGPL section 7** for
+linking against the Ultralight SDK, which is proprietary. Without it the
+combined work could not be distributed at all.
 
 Third-party components keep their own terms. `yt-dlp` is in the public domain
 (Unlicense) and is redistributed unmodified. The Ultralight SDK is licensed
-separately and must be obtained from its vendor; FFmpeg (libavformat/libavcodec)
-and libcurl carry their own licences, which matter in particular if you
-distribute a compiled binary rather than source.
+separately and must be obtained from its vendor. FFmpeg (libavformat /
+libavcodec), libcurl, MediaInfoLib, tinyxml2 and zlib carry their own licences,
+which matter in particular if you distribute a compiled binary rather than
+source.
+
+The copyright is held by a single author, so commercial licences on different
+terms can be granted on request.

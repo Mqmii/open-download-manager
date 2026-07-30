@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ODM — Download Interceptor",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Captures downloads and page videos and hands them to the ODM app. The ODM app must be running.",
   "permissions": [
     "downloads",
