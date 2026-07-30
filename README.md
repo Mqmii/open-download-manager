@@ -206,7 +206,8 @@ is exposed to it as a handful of JavaScript functions.
 - [x] Paired-track DASH (Instagram / Facebook)
 - [x] Identity-based capture on MSE players
 - [x] YouTube support (yt-dlp resolves, ODM downloads)
-- [ ] Download queue with several simultaneous jobs
+- [x] Download queue — jobs wait their turn instead of interrupting each other
+- [ ] Several simultaneous jobs (the engine still runs one at a time)
 - [ ] Pause per job, not just a global stop
 - [ ] DASH manifest (`.mpd`) engine
 - [ ] Long VODs (Twitch / Kick): streaming concat so a 30 GB recording does not

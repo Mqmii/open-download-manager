@@ -1160,6 +1160,8 @@ void ODMApp::OnDOMReady(ultralight::View* caller,
         BindJSCallbackWithRetval(&ODMApp::JS_OpenDownloadsFolder);
     global["DeleteFile"] =
         BindJSCallbackWithRetval(&ODMApp::JS_DeleteFile);
+    global["DeletePartial"] =
+        BindJSCallbackWithRetval(&ODMApp::JS_DeletePartial);
     global["RequestMediaInfo"] =
         BindJSCallback(&ODMApp::JS_RequestMediaInfo);
     global["ProbeUrl"] =
@@ -1727,6 +1729,49 @@ ODMApp::JS_OpenDownloadsFolder(const ultralight::JSObject&,
 // Permanently delete a downloaded file from disk. Used by the "Delete From
 // Disk" context-menu action. Sends the file to the Recycle Bin when possible
 // (safer, user can recover); falls back to permanent delete if that fails.
+namespace {
+
+// Delete one path, preferring the Recycle Bin so the user can undo. Returns
+// true once the path is gone — including when it was never there.
+bool DeletePath(const std::string& file_path) {
+    std::error_code ec;
+    if (!fs::exists(file_path, ec)) return true;
+
+#if defined(_WIN32)
+    // Send to Recycle Bin via SHFileOperationW (double-null-terminated string,
+    // fOF flags: silent + allow undo + no confirmation for safety dialogs).
+    std::wstring buf = Utf8ToWide(file_path) + L'\0';
+
+    SHFILEOPSTRUCTW op = {0};
+    op.hwnd   = nullptr;
+    op.wFunc  = FO_DELETE;
+    op.pFrom  = buf.c_str();
+    op.pTo    = nullptr;
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI |
+                FOF_SILENT;
+    if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted) return true;
+    // Recycle Bin failed (e.g. recycle bin disabled, path on network share)
+    // — fall through to permanent delete as a last resort.
+#endif
+
+    return fs::remove(file_path, ec);
+}
+
+// What an unfinished download leaves beside its output file. The engines in
+// Downloader, HlsDownloader, DashDownloader and YtDlpDownloader each write
+// some of these; the list lives here so cleanup cannot fall behind the code
+// that creates them.
+const char* const kPartialSuffixes[] = {
+    ".odmprog",       // multi-segment resume sidecar (chunk bitmap)
+    ".hlsmeta",       // HLS playlist metadata
+    ".hlsparts",      // HLS segment progress
+    ".vtrk",          // separate video track, pre-mux
+    ".vtrk.hlsmeta",  // playlist metadata for that video track
+    ".atrk"           // separate audio track, pre-mux
+};
+
+} // namespace
+
 // Args[0]: absolute file path. Returns true on success, false otherwise.
 ultralight::JSValue
 ODMApp::JS_DeleteFile(const ultralight::JSObject&,
@@ -1739,36 +1784,33 @@ ODMApp::JS_DeleteFile(const ultralight::JSObject&,
         return ultralight::JSValue(false);
     }
 
-    std::error_code ec;
-    if (!fs::exists(file_path, ec)) {
-        // Already gone — treat as success so the UI can clean up its entry.
-        return ultralight::JSValue(true);
-    }
-
-#if defined(_WIN32)
-    // Send to Recycle Bin via SHFileOperationW (double-null-terminated string,
-    // fOF flags: silent + allow undo + no confirmation for safety dialogs).
-    std::wstring wp = Utf8ToWide(file_path);
-    std::wstring buf = wp + L'\0';   // SHFILEOPSTRUCT needs double-null term
-
-    SHFILEOPSTRUCTW op = {0};
-    op.hwnd   = nullptr;
-    op.wFunc  = FO_DELETE;
-    op.pFrom  = buf.c_str();
-    op.pTo    = nullptr;
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI |
-                FOF_SILENT;
-    if (SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted)
-        return ultralight::JSValue(true);
-    // Recycle Bin failed (e.g. recycle bin disabled, path on network share)
-    // — fall through to permanent delete as a last resort.
-#endif
-
-    if (fs::remove(file_path, ec))
-        return ultralight::JSValue(true);
+    if (DeletePath(file_path)) return ultralight::JSValue(true);
 
     PostJS("UI.onStatus('Could not delete the file.');");
     return ultralight::JSValue(false);
+}
+
+// Args[0]: the output path of an unfinished download. Removes the partial file
+// AND every resume sidecar beside it. Deleting only the partial file would
+// leave the sidecars behind, and those are what make a later download to the
+// same name resume into a file that no longer exists.
+ultralight::JSValue
+ODMApp::JS_DeletePartial(const ultralight::JSObject&,
+                         const ultralight::JSArgs& args) {
+    std::string file_path;
+    if (args.size() >= 1 && args[0].IsString())
+        file_path = ToStdStr(args[0].ToString());
+    if (file_path.empty()) return ultralight::JSValue(false);
+
+    // A path ending in a separator is the default *folder*, not a file: the
+    // job was deleted before the engine ever resolved a name. Nothing to do,
+    // and removing it would take the download folder with it.
+    const char last = file_path.back();
+    if (last == '\\' || last == '/') return ultralight::JSValue(true);
+
+    const bool ok = DeletePath(file_path);
+    for (const char* suffix : kPartialSuffixes) DeletePath(file_path + suffix);
+    return ultralight::JSValue(ok);
 }
 
 void ODMApp::JS_RequestMediaInfo(const ultralight::JSObject&,

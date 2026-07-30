@@ -11,6 +11,10 @@ let activeCategory = 'all';
 // A FIFO, not a single slot: it used to be one variable, so queueing a third
 // download overwrote the second and that row sat on "Waiting..." forever.
 let pendingStarts = [];
+// Rows deleted while still downloading, as { id, path }. The engine holds the
+// output file open, so the partial data can only be removed once it reports the
+// stop back through UI.onComplete.
+let pendingPurge = [];
 // Throttle localStorage writes during high-frequency progress ticks.
 let lastSaveTs = 0;
 
@@ -814,9 +818,10 @@ function setupEventListeners() {
     // row. Mirrors updateToolbarState(), which enables this button for both.
     const targets = getDeleteTargets();
     if (targets.length === 0) return;
-    // Only ask about disk deletion when there is a real file path and the
-    // download actually finished (deleting an in-progress temp file is
-    // pointless — StopDownload handles that).
+    // Only ask about disk deletion for a download that actually finished:
+    // there the file is something the user may want to keep. An unfinished
+    // one leaves only a partial file, which deleteRows removes outright — no
+    // point asking whether to keep something unusable.
     const canDeleteFromDisk = targets.some(dl => dl.path &&
                                                  dl.status === 'finished');
     if (canDeleteFromDisk) {
@@ -2039,21 +2044,46 @@ function getDeleteTargets() {
   return selected ? [selected] : [];
 }
 
+// Remove a partial download from disk: the incomplete file plus every resume
+// sidecar the engines write beside it. Safe to call with a path that is only a
+// folder, or that never came into existence.
+function purgePartial(path) {
+  if (!path) return;
+  if (typeof DeletePartial === 'function') DeletePartial(path);
+}
+
 // Core removal: deletes the given rows, optionally their files from disk.
 // fromDisk=true also deletes the file(s) on disk via the native bridge.
 function deleteRows(targets, fromDisk) {
   if (!targets || targets.length === 0) return;
 
-  // Stop an in-progress download before removing its entry, and take any
-  // deleted row out of the queue so its turn never comes up.
+  // Take any deleted row out of the queue so its turn never comes up.
   targets.forEach(dl => dequeue(dl.id));
-  if (targets.some(dl => dl.status === 'downloading')) {
+
+  // An unfinished download leaves a partial file and its resume sidecars on
+  // disk. Once the row is gone nothing can ever continue them, so they are
+  // removed unconditionally — there is no question worth asking about a file
+  // the user can no longer use. (This used to be skipped entirely, on the
+  // assumption that stopping a download cleaned up after itself. It does the
+  // opposite: it keeps the partial data precisely so Resume can use it.)
+  // A path ending in a separator is the default folder, not a file: the row
+  // was removed before the engine ever resolved a name, so there is nothing on
+  // disk and nothing to report.
+  const partialTargets = targets.filter(
+    dl => dl.path && !/[\\/]$/.test(dl.path) && dl.status !== 'finished');
+  const live = targets.filter(dl => dl.status === 'downloading');
+
+  if (live.length > 0) {
+    // The engine still holds the file open. Purge once it confirms the stop,
+    // otherwise the delete races the handle and silently fails.
+    live.forEach(dl => pendingPurge.push({ id: dl.id, path: dl.path }));
     if (typeof StopDownload === 'function') StopDownload();
   }
+  partialTargets
+    .filter(dl => dl.status !== 'downloading')
+    .forEach(dl => purgePartial(dl.path));
 
-  // Optionally delete the file(s) from disk. We only attempt this for
-  // finished downloads with a known path; in-progress/errored entries have
-  // no useful file to delete.
+  // Deleting a finished file from disk stays an explicit choice.
   const diskTargets = fromDisk
     ? targets.filter(dl => dl.path && dl.status === 'finished')
     : [];
@@ -2076,6 +2106,10 @@ function deleteRows(targets, fromDisk) {
           : `${targets.length} files deleted and removed from list.`);
       }
     }
+  } else if (partialTargets.length > 0) {
+    showStatusToast(targets.length === 1
+      ? 'Removed from the list; the partial file was deleted.'
+      : `${targets.length} downloads removed; partial files deleted.`);
   } else {
     showStatusToast(targets.length === 1
       ? 'Download removed from list.'
@@ -2216,6 +2250,14 @@ window.UI = {
     // could mark an unrelated row finished and overwrite its path when an
     // event arrived without a usable id.
     const dl = id ? downloads.find(d => d.id === id) : null;
+
+    // A row deleted while it was still running: the engine has let go of the
+    // file now, so the partial data can finally be removed.
+    const p = pendingPurge.findIndex(e => e.id === id);
+    if (p !== -1) {
+      purgePartial(filePath || pendingPurge[p].path);
+      pendingPurge.splice(p, 1);
+    }
 
     if (dl) {
       if (kind === 'ok') {

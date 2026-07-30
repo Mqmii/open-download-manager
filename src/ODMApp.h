@@ -87,6 +87,10 @@ private:
                                                const ultralight::JSArgs& args);
     ultralight::JSValue JS_DeleteFile(const ultralight::JSObject& thisObj,
                                       const ultralight::JSArgs& args);
+    // Remove the partial file of an unfinished download together with every
+    // resume sidecar written beside it.
+    ultralight::JSValue JS_DeletePartial(const ultralight::JSObject& thisObj,
+                                         const ultralight::JSArgs& args);
     // Analyze a file on disk with MediaInfoLib on a worker thread; the result
     // is delivered asynchronously via UI.onMediaInfo(requestId, text).
     void JS_RequestMediaInfo(const ultralight::JSObject& thisObj,
