@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.2.2)
+        VERSION 0.2.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -122,6 +122,21 @@ if(ODM_BUILD_TESTS)
         target_link_libraries(cookie_scope_test PRIVATE ws2_32)
     endif()
     add_test(NAME cookie_scope COMMAND cookie_scope_test)
+
+    # Asserts that the bridge only answers to its own loopback name, so a page
+    # that has rebound its domain to 127.0.0.1 cannot read the token. Binds
+    # 127.0.0.1:47931; no network access.
+    add_executable(bridge_host_test
+        tools/bridge_host_test.cpp
+        src/BridgeServer.cpp
+        src/YtDlp.cpp)
+    target_include_directories(bridge_host_test PRIVATE src)
+    target_compile_definitions(bridge_host_test PRIVATE
+        ODM_VERSION="${PROJECT_VERSION}")
+    if(WIN32)
+        target_link_libraries(bridge_host_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME bridge_host COMMAND bridge_host_test)
 endif()
 
 # yt-dlp.exe (YouTube extraction) is not in the repository -- it is a 17 MB

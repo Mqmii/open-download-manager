@@ -55,6 +55,9 @@ struct BridgePayload {
 ///                  chrome-extension:// origin, otherwise 403.
 ///   OPTIONS *   -> CORS preflight (echoes chrome-extension:// origins only)
 ///
+/// Every request must carry a Host naming this server's own loopback address;
+/// anything else is a DNS-rebinding attempt and gets 403 before it is routed.
+///
 /// Connections are handled one request per connection and closed
 /// ("Connection: close"), which keeps the parser simple and robust.
 ///
@@ -88,6 +91,7 @@ private:
     std::thread thread_;
     AddCallback cb_;
     std::string token_;
+    uint16_t    port_ = 0;      // the bound port, checked against Host
     bool        wsa_started_ = false;
 };
 

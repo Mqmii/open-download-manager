@@ -317,6 +317,7 @@ bool BridgeServer::Start(uint16_t port, AddCallback cb) {
     }
 
     listen_sock_ = static_cast<uintptr_t>(s);
+    port_ = port;
     running_.store(true);
     thread_ = std::thread(&BridgeServer::ListenLoop, this);
     return true;
@@ -454,6 +455,50 @@ static bool ReadRequest(SOCKET s, HttpRequest& req) {
     return true;
 }
 
+// Is this request addressed to us by our own name, or did it arrive under
+// somebody else's?
+//
+// Binding to 127.0.0.1 keeps remote machines out, but it does not keep a web
+// page out: an attacker can point their own domain at 127.0.0.1 (DNS
+// rebinding), at which point the browser treats this server as same-origin
+// with their page and hands them every response — CORS never even applies,
+// because from the browser's side nothing is cross-origin. What still gives
+// the trick away is the Host header, which carries the name the client typed
+// (`evil.example:47923`) rather than the address it resolved to. Anything but
+// our own loopback name is refused.
+static bool HostIsOurs(const std::string& host, uint16_t port) {
+    if (host.empty()) return false;   // HTTP/1.1 requires it
+
+    std::string name = host;
+    std::string port_part;
+    if (!name.empty() && name[0] == '[') {          // [::1]:47923
+        const size_t close = name.find(']');
+        if (close == std::string::npos) return false;
+        if (close + 1 < name.size()) {
+            if (name[close + 1] != ':') return false;
+            port_part = name.substr(close + 2);
+        }
+        name = name.substr(1, close - 1);
+    } else {
+        const size_t colon = name.rfind(':');
+        if (colon != std::string::npos) {
+            port_part = name.substr(colon + 1);
+            name = name.substr(0, colon);
+        }
+    }
+
+    // A port, when spelled out, has to be the one we are listening on: a page
+    // reaching us on another port is not talking to this server.
+    if (!port_part.empty()) {
+        if (port_part.find_first_not_of("0123456789") != std::string::npos)
+            return false;
+        if (std::atoi(port_part.c_str()) != static_cast<int>(port)) return false;
+    }
+
+    name = ToLower(name);
+    return name == "127.0.0.1" || name == "localhost" || name == "::1";
+}
+
 static void Respond(SOCKET s, int code, const std::string& reason,
                     const std::string& body,
                     const std::string& allow_origin = std::string(),
@@ -477,6 +522,18 @@ void BridgeServer::HandleClient(uintptr_t client) {
     SOCKET s = static_cast<SOCKET>(client);
     HttpRequest req;
     if (!ReadRequest(s, req)) return;   // garbage/timeout: drop silently
+
+    // Before anything else, and for every endpoint: a request that reached us
+    // under a foreign name is a rebinding attempt, not a client of ours.
+    {
+        auto hit = req.headers.find("host");
+        const std::string host = hit == req.headers.end() ? std::string()
+                                                          : hit->second;
+        if (!HostIsOurs(host, port_)) {
+            Respond(s, 403, "Forbidden", "{\"ok\":false,\"error\":\"bad host\"}");
+            return;
+        }
+    }
 
     // CORS: only browser-extension origins get echoed (web pages get nothing,
     // which makes the browser block them from reading our responses).
