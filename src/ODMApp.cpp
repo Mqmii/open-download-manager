@@ -1213,6 +1213,7 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
         if (!ctx_json.empty() && ParseSimpleJson(ctx_json, m)) {
             req_ctx.referrer   = m["referrer"];
             req_ctx.cookies    = m["cookies"];
+            req_ctx.cookie_jar = m["cookieJar"];
             req_ctx.user_agent = m["userAgent"];
             job_type = m["type"];
             audio_url = m["audioUrl"];   // paired DASH: the audio rung
@@ -1961,8 +1962,15 @@ ProbeInfo ProbeAttempt(const std::string& url, bool head,
                                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                                   "Chrome/126.0.0.0 Safari/537.36"
                                 : ua.c_str());
-    if (!cookies.empty())  curl_easy_setopt(curl, CURLOPT_COOKIE, cookies.c_str());
-    if (!referrer.empty()) curl_easy_setopt(curl, CURLOPT_REFERER, referrer.c_str());
+    // Same rule as the downloader: cookies go through curl's cookie engine so
+    // a redirect off the probed host cannot take them along. ApplyRequestContext
+    // raises MAXREDIRS to its own cap, so the probe's tighter one is re-applied
+    // after it.
+    RequestContext probe_ctx;
+    probe_ctx.cookies  = cookies;
+    probe_ctx.referrer = referrer;
+    ApplyRequestContext(curl, probe_ctx, url, nullptr);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     if (head) {
         curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     } else {
@@ -2143,6 +2151,7 @@ void ODMApp::OnExternalDownload(const BridgePayload& payload) {
            << EscapeJS(payload.filename) << "', '"
            << EscapeJS(payload.referrer) << "', '"
            << EscapeJS(payload.cookies) << "', '"
+           << EscapeJS(payload.cookie_jar) << "', '"
            << EscapeJS(payload.user_agent) << "', '"
            << EscapeJS(hdrs.str()) << "', '"
            << EscapeJS(payload.type) << "', '"

@@ -2355,9 +2355,11 @@ window.UI = {
   // just presses "Download Now". The request context (cookies/referrer/UA/
   // filename/extra headers) is kept in memory only and consumed by
   // startNewDownload(). `headersJson` is a JSON object string of extra
-  // request headers captured by the extension (may be empty).
-  onExternalDownload(url, filename, referrer, cookies, userAgent, headersJson,
-                     type, audioUrl, height) {
+  // request headers captured by the extension (may be empty). `cookieJar`
+  // carries the same cookies as `cookies` but scoped per host, one Netscape
+  // cookie-file line each.
+  onExternalDownload(url, filename, referrer, cookies, cookieJar, userAgent,
+                     headersJson, type, audioUrl, height) {
     if (!url) return;
     let headers = {};
     if (headersJson) {
@@ -2367,6 +2369,10 @@ window.UI = {
       filename: filename || '',
       referrer: referrer || '',
       cookies: cookies || '',
+      // The cookies again, each with the domain/path the browser scopes it
+      // to. This is the form the native side sends; `cookies` above is the
+      // flat header, kept for display and for anything that predates this.
+      cookieJar: cookieJar || '',
       userAgent: userAgent || '',
       headers: headers,
       // "" (plain HTTP) | "hls" | "dash" | "ytdlp" — routes the engine

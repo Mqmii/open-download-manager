@@ -532,6 +532,7 @@ void BridgeServer::HandleClient(uintptr_t client) {
         p.filename   = m["filename"];
         p.referrer   = m["referrer"];
         p.cookies    = m["cookies"];
+        p.cookie_jar = m["cookieJar"];
         p.user_agent = m["userAgent"];
         p.audio_url  = m["audioUrl"];
         p.type       = m["type"];

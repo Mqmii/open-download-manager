@@ -103,6 +103,27 @@ add_custom_command(TARGET ${APP_NAME} POST_BUILD
         "${UL_SDK_PATH}/bin"
         "$<TARGET_FILE_DIR:${APP_NAME}>")
 
+# --- Tests ------------------------------------------------------------------
+# Off by default: the app itself has no test dependencies and a plain build
+# should not pay for one. Enable with -DODM_BUILD_TESTS=ON, then run
+# `ctest -C Release` (or the executable directly) from the build dir.
+option(ODM_BUILD_TESTS "Build the test executables" OFF)
+if(ODM_BUILD_TESTS)
+    enable_testing()
+    # Asserts that hand-off cookies stay on the site they were captured on
+    # when a download is redirected. Talks to two throwaway HTTP servers it
+    # starts on loopback; no network access.
+    add_executable(cookie_scope_test
+        tools/cookie_scope_test.cpp
+        src/Downloader.cpp)
+    target_include_directories(cookie_scope_test PRIVATE src)
+    target_link_libraries(cookie_scope_test PRIVATE CURL::libcurl)
+    if(WIN32)
+        target_link_libraries(cookie_scope_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME cookie_scope COMMAND cookie_scope_test)
+endif()
+
 # yt-dlp.exe (YouTube extraction) is not in the repository -- it is a 17 MB
 # binary that updates itself. tools/package.ps1 downloads it when building a
 # release; for a local build, drop it in tools/ and it lands next to ODM.exe.

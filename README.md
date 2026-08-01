@@ -74,8 +74,11 @@ extension talks to it over that bridge.
 **Two ways a download reaches the app.** A normal browser download is
 intercepted before Chrome writes anything to disk and handed over with the
 cookies, referrer and User-Agent that made it work in the browser — the reason
-a link that needs a session still downloads correctly outside it. A page video
-is offered through a floating panel over the player.
+a link that needs a session still downloads correctly outside it. Those
+cookies keep the scope the browser holds them under: each one travels with its
+own domain and path, so a download that gets redirected off the site cannot
+take the session cookie with it. A page video is offered through a floating
+panel over the player.
 
 ![Download panel over a video player](docs/screenshot-extension.png)
 

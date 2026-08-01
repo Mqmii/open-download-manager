@@ -24,6 +24,11 @@ struct BridgePayload {
     std::string filename;     // server/browser-suggested file name (may be "")
     std::string referrer;
     std::string cookies;      // "k=v; k2=v2" header form
+    // The same cookies with the scope the browser holds them under, one
+    // Netscape cookie-file line each, newline separated. This is what the
+    // downloader actually sends: the header form above cannot say which host
+    // a cookie belongs to, so it cannot survive a redirect safely.
+    std::string cookie_jar;
     std::string user_agent;
     std::vector<std::pair<std::string, std::string>> headers; // extra headers
     // Second track for paired-track DASH (Instagram/Facebook): the audio-only
@@ -45,7 +50,7 @@ struct BridgePayload {
 /// Endpoints:
 ///   GET  /ping  -> {"app":"odm","version":"...","token":"..."}
 ///   POST /add   -> JSON body {url, filename?, referrer?, cookies?,
-///                             userAgent?, headers?{...}}
+///                             cookieJar?, userAgent?, headers?{...}}
 ///                  requires X-ODM-Token; Origin (if present) must be a
 ///                  chrome-extension:// origin, otherwise 403.
 ///   OPTIONS *   -> CORS preflight (echoes chrome-extension:// origins only)

@@ -159,16 +159,128 @@ Downloader::~Downloader() {
     }
 }
 
-void Downloader::ApplyRequestContext(CURL* curl) const {
-    if (!req_ctx_.referrer.empty())
-        curl_easy_setopt(curl, CURLOPT_REFERER, req_ctx_.referrer.c_str());
-    if (!req_ctx_.cookies.empty())
-        curl_easy_setopt(curl, CURLOPT_COOKIE, req_ctx_.cookies.c_str());
+// --- Hand-off credentials --------------------------------------------------
+
+namespace {
+
+// Lower-cased host of an absolute URL ("" when it doesn't parse).
+std::string UrlHost(const std::string& url) {
+    CURLU* h = curl_url();
+    if (!h) return {};
+    std::string host;
+    if (curl_url_set(h, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK) {
+        char* p = nullptr;
+        if (curl_url_get(h, CURLUPART_HOST, &p, 0) == CURLUE_OK && p) {
+            host.assign(p);
+            curl_free(p);
+        }
+    }
+    curl_url_cleanup(h);
+    std::transform(host.begin(), host.end(), host.begin(),
+                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
+    return host;
+}
+
+// A cookie name or value carrying a tab or a newline would split the
+// tab-separated line it is written into and silently redefine the cookies
+// after it. Such a cookie cannot exist per RFC 6265; drop it if it shows up.
+bool CookieFieldSafe(const std::string& s) {
+    return s.find_first_of("\t\r\n") == std::string::npos;
+}
+
+// One Netscape cookie-file line — the format CURLOPT_COOKIELIST parses:
+//   domain <TAB> tailmatch <TAB> path <TAB> secure <TAB> expiry <TAB> name <TAB> value
+std::string NetscapeCookieLine(const std::string& domain, bool tailmatch,
+                               const std::string& path, bool secure,
+                               long long expires, const std::string& name,
+                               const std::string& value) {
+    std::string dom = domain;
+    // The flag column is what curl actually reads, but a tailmatch domain is
+    // conventionally written with the leading dot; keep the two consistent.
+    if (tailmatch && !dom.empty() && dom[0] != '.') dom.insert(dom.begin(), '.');
+    std::ostringstream l;
+    l << dom << '\t' << (tailmatch ? "TRUE" : "FALSE") << '\t'
+      << (path.empty() ? "/" : path) << '\t' << (secure ? "TRUE" : "FALSE")
+      << '\t' << expires << '\t' << name << '\t' << value;
+    return l.str();
+}
+
+// Fallback for a context that carried only the "k=v; k2=v2" header: the real
+// per-cookie domains are unknown, so the whole set is pinned to the host it
+// was captured on plus that host's subdomains. Narrower than the browser for
+// a cookie inherited from a parent domain, but it never crosses a site
+// boundary — which is the property that matters here.
+std::vector<std::string> ScopeCookieHeader(const std::string& header,
+                                           const std::string& host) {
+    std::vector<std::string> lines;
+    if (host.empty()) return lines;   // unparsable URL: send nothing
+    size_t pos = 0;
+    while (pos <= header.size()) {
+        size_t semi = header.find(';', pos);
+        if (semi == std::string::npos) semi = header.size();
+        std::string pair = header.substr(pos, semi - pos);
+        pos = semi + 1;
+
+        const size_t a = pair.find_first_not_of(" \t");
+        if (a == std::string::npos) continue;
+        const size_t b = pair.find_last_not_of(" \t");
+        pair = pair.substr(a, b - a + 1);
+
+        const size_t eq = pair.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string name  = pair.substr(0, eq);
+        const std::string value = pair.substr(eq + 1);
+        if (!CookieFieldSafe(name) || !CookieFieldSafe(value)) continue;
+        lines.push_back(NetscapeCookieLine(host, true, "/", false, 0,
+                                           name, value));
+    }
+    return lines;
+}
+
+}  // namespace
+
+void ApplyRequestContext(CURL* curl, const RequestContext& ctx,
+                         const std::string& url, curl_slist* extra_headers) {
+    if (!ctx.referrer.empty())
+        curl_easy_setopt(curl, CURLOPT_REFERER, ctx.referrer.c_str());
     // Applied after the default UA setopt, so a browser-supplied UA wins.
-    if (!req_ctx_.user_agent.empty())
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, req_ctx_.user_agent.c_str());
-    if (req_headers_)
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, req_headers_);
+    if (!ctx.user_agent.empty())
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, ctx.user_agent.c_str());
+    if (extra_headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, extra_headers);
+    // A redirect chain is not allowed to run forever; libcurl's own default
+    // is unlimited.
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+
+    // Cookies: hand them to the engine, never to CURLOPT_COOKIE (see the
+    // header). Each line carries its own domain/path/secure scope, so curl
+    // re-decides what to send at every hop of a redirect.
+    std::vector<std::string> lines;
+    if (!ctx.cookie_jar.empty()) {
+        size_t pos = 0;
+        while (pos < ctx.cookie_jar.size()) {
+            size_t nl = ctx.cookie_jar.find('\n', pos);
+            if (nl == std::string::npos) nl = ctx.cookie_jar.size();
+            std::string line = ctx.cookie_jar.substr(pos, nl - pos);
+            pos = nl + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            // Seven fields, and a '#' would make curl read it as a comment.
+            if (line.empty() || line[0] == '#') continue;
+            if (std::count(line.begin(), line.end(), '\t') != 6) continue;
+            lines.push_back(std::move(line));
+        }
+    } else if (!ctx.cookies.empty()) {
+        lines = ScopeCookieHeader(ctx.cookies, UrlHost(url));
+    }
+    if (lines.empty()) return;
+
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");   // engine on, no file
+    for (const std::string& line : lines)
+        curl_easy_setopt(curl, CURLOPT_COOKIELIST, line.c_str());
+}
+
+void Downloader::ApplyRequestContext(CURL* curl, const std::string& url) const {
+    odm::ApplyRequestContext(curl, req_ctx_, url, req_headers_);
 }
 
 void Downloader::SetPartCount(int parts) {
@@ -377,7 +489,7 @@ bool Downloader::Probe(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlAbortIfStopped);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &stop_requested_);
-    ApplyRequestContext(curl);
+    ApplyRequestContext(curl, url);
 
     HeaderCtx hdr{};
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, CurlHeader);
@@ -1073,7 +1185,7 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
         curl_easy_setopt(curl, CURLOPT_USERAGENT,
                          "Mozilla/5.0 (compatible; ODM/0.1)");
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        ApplyRequestContext(curl);
+        ApplyRequestContext(curl, url);
         // Apply the user's global speed cap, shared across the connections.
         if (speed_limit_ > 0) {
             uint64_t per = speed_limit_ /
@@ -1187,7 +1299,7 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         curl_easy_setopt(curl, CURLOPT_USERAGENT,
                          "Mozilla/5.0 (compatible; ODM/0.1)");
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        ApplyRequestContext(curl);
+        ApplyRequestContext(curl, url);
         // Apply the user's global speed cap, shared across the connections.
         // Divide by the ACTUAL number of parts in this run, not part_count_:
         // a single-connection download (small file / no Range support) must

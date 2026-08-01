@@ -163,7 +163,11 @@ async function sendToOdm(payload) {
   // once and retry.
   for (let attempt = 0; attempt < 2; ++attempt) {
     try {
-      if (!payload.cookies)   payload.cookies   = await cookieHeader(payload.url);
+      if (!payload.cookies) {
+        const jar = await cookieContext(payload.url);
+        payload.cookies   = jar.header;
+        payload.cookieJar = jar.jar;
+      }
       if (!payload.userAgent) payload.userAgent = navigator.userAgent;
       const r = await fetch(ADD_URL, {
         method: 'POST',
@@ -216,12 +220,36 @@ async function ytHeights(url) {
   }
 }
 
-async function cookieHeader(url) {
+// The app needs the cookies for `url`, but it also needs to know WHICH HOST
+// each one belongs to. A flat "Cookie:" header cannot say that, and the app
+// sends whatever it is given to every host a redirect leads to — so a download
+// that hops from the site to somewhere else hands over the session cookie.
+// Chrome knows every cookie's real scope, so send that too: one Netscape
+// cookie-file line each, which is the format the app's HTTP layer reads.
+//   domain <TAB> subdomains <TAB> path <TAB> secure <TAB> expiry <TAB> name <TAB> value
+async function cookieContext(url) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
-    return cookies.map(c => c.name + '=' + c.value).join('; ');
+    const header = cookies.map(c => c.name + '=' + c.value).join('; ');
+    const lines = [];
+    for (const c of cookies) {
+      // A tab or newline inside a name/value would split the line and
+      // redefine the cookies after it. RFC 6265 forbids both.
+      if (/[\t\r\n]/.test(c.name) || /[\t\r\n]/.test(c.value)) continue;
+      const tail = !c.hostOnly;
+      let domain = c.domain || '';
+      if (tail && domain[0] !== '.') domain = '.' + domain;
+      // 0 = session cookie: it lives as long as the transfer does.
+      const exp = (c.session || !c.expirationDate)
+        ? 0 : Math.floor(c.expirationDate);
+      lines.push([
+        domain, tail ? 'TRUE' : 'FALSE', c.path || '/',
+        c.secure ? 'TRUE' : 'FALSE', String(exp), c.name, c.value
+      ].join('\t'));
+    }
+    return { header, jar: lines.join('\n') };
   } catch (e) {
-    return '';
+    return { header: '', jar: '' };
   }
 }
 

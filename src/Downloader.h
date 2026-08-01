@@ -35,9 +35,27 @@ struct ProgressInfo {
 struct RequestContext {
     std::string referrer;
     std::string cookies;                    // "k=v; k2=v2" (Cookie header)
+    // The same cookies WITH the scope the browser keeps for them: one
+    // Netscape cookie-file line each ("domain\ttail\tpath\tsecure\texp\t
+    // name\tvalue"), newline separated. Empty when the hand-off came from
+    // something that doesn't know the scopes (see ApplyRequestContext).
+    std::string cookie_jar;
     std::string user_agent;                 // overrides the default UA if set
     std::vector<std::string> extra_headers; // full "Name: value" lines
 };
+
+/// Install a hand-off context on a curl handle for a request to `url`.
+///
+/// Cookies go through curl's cookie engine, never CURLOPT_COOKIE. That option
+/// is a fixed header: it rides along to every host in a redirect chain, so a
+/// download that hops off the site it started on hands the session cookie to
+/// whoever it lands on. The engine matches domain/path/secure per request
+/// instead, which is what the browser does and the only thing that keeps a
+/// cross-site redirect from turning into session theft.
+///
+/// `extra_headers` is the caller's pre-built slist (may be null).
+void ApplyRequestContext(CURL* curl, const RequestContext& ctx,
+                         const std::string& url, curl_slist* extra_headers);
 
 ///
 /// Final status of a download.
@@ -242,8 +260,9 @@ private:
 
     // Apply the per-run request context (referrer/cookies/UA/extra headers)
     // to a curl handle. Called for every easy handle: probe, chunk workers,
-    // and legacy part workers.
-    void ApplyRequestContext(CURL* curl) const;
+    // and legacy part workers. `url` is the request's own URL — cookies are
+    // scoped against it, so it must be the one set on the handle.
+    void ApplyRequestContext(CURL* curl, const std::string& url) const;
 
     // Claim exclusive ownership of a chunk (exactly one worker wins).
     bool ClaimChunk(uint64_t idx);

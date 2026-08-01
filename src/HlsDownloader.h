@@ -102,7 +102,9 @@ private:
     bool FetchKey();
     bool DecryptSegment(std::vector<uint8_t>& data, uint64_t seq);
 
-    void ApplyRequestContext(CURL* curl) const;
+    // `url` is the request's own URL: cookies are scoped against it, so it
+    // must be the one set on the handle.
+    void ApplyRequestContext(CURL* curl, const std::string& url) const;
 
     void SaveMeta();
     bool LoadMeta();

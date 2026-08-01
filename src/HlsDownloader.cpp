@@ -221,15 +221,8 @@ DownloadResult HlsDownloader::WaitForCompletion() {
     return result_;
 }
 
-void HlsDownloader::ApplyRequestContext(CURL* curl) const {
-    if (!req_ctx_.referrer.empty())
-        curl_easy_setopt(curl, CURLOPT_REFERER, req_ctx_.referrer.c_str());
-    if (!req_ctx_.cookies.empty())
-        curl_easy_setopt(curl, CURLOPT_COOKIE, req_ctx_.cookies.c_str());
-    if (!req_ctx_.user_agent.empty())
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, req_ctx_.user_agent.c_str());
-    if (req_headers_)
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, req_headers_);
+void HlsDownloader::ApplyRequestContext(CURL* curl, const std::string& url) const {
+    odm::ApplyRequestContext(curl, req_ctx_, url, req_headers_);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +243,7 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
     if (range) curl_easy_setopt(curl, CURLOPT_RANGE, range);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, FetchWrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &fb);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 5L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);   // hop cap in ApplyRequestContext
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 10240L);  // stall watchdog:
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);      // <10KB/s for 20s
@@ -261,7 +254,7 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
             std::max<uint64_t>(speed_limit_ / std::max(part_count_, 1), 4096));
         curl_easy_setopt(curl, CURLOPT_MAX_RECV_SPEED_LARGE, per);
     }
-    ApplyRequestContext(curl);
+    ApplyRequestContext(curl, url);
     // Quick cancel: abort the transfer within ~100ms of Stop/Fail.
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
@@ -323,12 +316,12 @@ bool HlsDownloader::LoadPlaylist(const std::string& url, std::string& out_body,
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, FetchWrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &fb);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 5L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);   // hop cap in ApplyRequestContext
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, kDefaultUA);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-    ApplyRequestContext(curl);
+    ApplyRequestContext(curl, url);
     const CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     char* eff = nullptr;
