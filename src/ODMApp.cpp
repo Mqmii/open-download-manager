@@ -865,7 +865,10 @@ ODMApp::ODMApp() {
     window_ = Window::Create(app_->main_monitor(), 1100, 720, false,
                              kWindowFlags_Titled | kWindowFlags_Resizable |
                              kWindowFlags_Maximizable);
-    window_->SetTitle("ODM - Open Download Manager");
+    // Concatenated at compile time from the CMake project version, the same
+    // define the bridge reports and the update check compares against — so
+    // the number in the title bar cannot drift from the build it belongs to.
+    window_->SetTitle("ODM - Open Download Manager v" ODM_VERSION);
     window_->set_listener(this);
 
 #if defined(_WIN32)
