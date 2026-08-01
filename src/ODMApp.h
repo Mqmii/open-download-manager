@@ -85,6 +85,11 @@ private:
                                       const ultralight::JSArgs& args);
     ultralight::JSValue JS_OpenDownloadsFolder(const ultralight::JSObject& thisObj,
                                                const ultralight::JSArgs& args);
+    // Open the releases page in the default browser. Takes no argument: the
+    // URL is a native constant, so the interface cannot ask the shell to open
+    // something else.
+    ultralight::JSValue JS_OpenReleasesPage(const ultralight::JSObject& thisObj,
+                                            const ultralight::JSArgs& args);
     ultralight::JSValue JS_DeleteFile(const ultralight::JSObject& thisObj,
                                       const ultralight::JSArgs& args);
     // Remove the partial file of an unfinished download together with every
@@ -184,6 +189,20 @@ private:
         void Close();
     };
     std::shared_ptr<Mailbox> mail_ = std::make_shared<Mailbox>();
+
+    // The update check runs off-thread and can answer either side of the page
+    // being ready, so the answer is parked here and delivered by whichever of
+    // the two happens second. UI.onUpdateAvailable tolerates being told twice.
+    //
+    // Shared, not a plain member: the worker sits in a socket timeout for up
+    // to fifteen seconds, which is long enough for someone to quit. A lambda
+    // holding `this` would then write into a destroyed app — the same reason
+    // the mailbox is a shared_ptr.
+    struct UpdateSlot {
+        std::mutex  mtx;
+        std::string version;
+    };
+    std::shared_ptr<UpdateSlot> update_slot_ = std::make_shared<UpdateSlot>();
 };
 
 } // namespace odm

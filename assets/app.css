@@ -233,6 +233,37 @@ body.hide-disk .disk-widget {
   align-items: center;
 }
 
+/* Update notice — a quiet pill beside the search box, not a modal. Nothing is
+   installed on the user's behalf, so this never has to interrupt anything. */
+.update-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  margin-right: 12px;
+  padding: 0 16px;
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  background-color: var(--accent-soft);
+  color: var(--accent-hover);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.update-pill:hover {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.update-pill-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
 /* Search Box */
 .search-box {
   position: relative;

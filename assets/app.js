@@ -28,6 +28,10 @@ const el = {
   tbDelete:   document.getElementById('tb-delete'),
   tbOptions:  document.getElementById('tb-options'),
   
+  // Update notice (hidden until the native check finds a newer release)
+  updatePill:     document.getElementById('update-pill'),
+  updatePillText: document.getElementById('update-pill-text'),
+
   // Search and Table
   searchInput:  document.getElementById('search-input'),
   tableBody:    document.getElementById('table-body'),
@@ -836,7 +840,16 @@ function setupEventListeners() {
   });
   
   el.tbOptions.addEventListener('click', openOptionsModal);
-  
+
+  // The pill only ever opens the releases page — the URL lives on the native
+  // side, so there is nothing to pass and nothing here to get wrong.
+  if (el.updatePill) {
+    el.updatePill.addEventListener('click', () => {
+      if (typeof OpenReleasesPage === 'function') OpenReleasesPage();
+      else showStatusToast('Releases page bridge is not available.');
+    });
+  }
+
   // Modal Buttons
   el.modalClose.addEventListener('click', closeModal);
   el.modalCancel.addEventListener('click', closeModal);
@@ -2348,6 +2361,17 @@ window.UI = {
     let info = null;
     try { info = JSON.parse(json); } catch (e) { info = null; }
     renderUrlProbe(info);
+  },
+
+  // 4d. A newer release exists. Nothing is downloaded or installed here: the
+  // pill is a link, and pressing it hands the user to the releases page in
+  // their browser. Called at most once per launch, but tolerates a repeat —
+  // the native side may deliver the same answer from two places depending on
+  // whether the check beat the page being ready.
+  onUpdateAvailable(version) {
+    if (!version || !el.updatePill) return;
+    el.updatePillText.textContent = 'Update to v' + version;
+    el.updatePill.style.display = 'flex';
   },
 
   // 5. External Download — the browser extension captured a download and the

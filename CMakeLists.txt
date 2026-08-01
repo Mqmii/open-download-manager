@@ -58,6 +58,8 @@ add_app(${APP_NAME}
     src/Muxer.cpp
     src/BridgeServer.h
     src/BridgeServer.cpp
+    src/UpdateCheck.h
+    src/UpdateCheck.cpp
 )
 
 # Embed the application icon into the Windows executable's resource section.
@@ -137,6 +139,22 @@ if(ODM_BUILD_TESTS)
         target_link_libraries(bridge_host_test PRIVATE ws2_32)
     endif()
     add_test(NAME bridge_host COMMAND bridge_host_test)
+
+    # Asserts the update check only speaks up for a genuinely newer release,
+    # and survives whatever GitHub answers. No network access.
+    add_executable(update_check_test
+        tools/update_check_test.cpp
+        src/UpdateCheck.cpp
+        src/BridgeServer.cpp
+        src/YtDlp.cpp)
+    target_include_directories(update_check_test PRIVATE src)
+    target_compile_definitions(update_check_test PRIVATE
+        ODM_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(update_check_test PRIVATE CURL::libcurl)
+    if(WIN32)
+        target_link_libraries(update_check_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME update_check COMMAND update_check_test)
 endif()
 
 # yt-dlp.exe (YouTube extraction) is not in the repository -- it is a 17 MB

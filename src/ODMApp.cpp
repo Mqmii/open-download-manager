@@ -5,6 +5,7 @@
 
 #include "ODMApp.h"
 
+#include "UpdateCheck.h"
 #include "YtDlp.h"
 
 #include <Ultralight/ConsoleMessage.h>
@@ -991,6 +992,23 @@ ODMApp::ODMApp() {
     // and silent either way — nothing here depends on it succeeding.
     ytdlp::SelfUpdateAsync();
 
+    // Same idea for ODM itself, except nothing is installed: the app cannot
+    // replace its own running executable, and the extension beside it is
+    // loaded unpacked, so Chrome would keep the old one until it is reloaded
+    // by hand. Half-updating someone is worse than telling them. Once a day,
+    // and quiet unless there is genuinely something newer.
+    updates::CheckAsync(
+        [mail = mail_, slot = update_slot_](const std::string& version) {
+            {
+                std::lock_guard<std::mutex> lk(slot->mtx);
+                slot->version = version;
+            }
+            std::ostringstream js;
+            js << "if (window.UI && UI.onUpdateAvailable) UI.onUpdateAvailable('"
+               << EscapeJS(version) << "');";
+            mail->PostJS(js.str());   // no-op in the page if it isn't up yet
+        });
+
     overlay_->view()->LoadURL("file:///index.html");
 
     // Start the browser bridge (Chrome extension -> this app). If the port is
@@ -1168,10 +1186,26 @@ void ODMApp::OnDOMReady(ultralight::View* caller,
         BindJSCallback(&ODMApp::JS_ProbeUrl);
     global["GetPartInfo"] =
         BindJSCallbackWithRetval(&ODMApp::JS_GetPartInfo);
+    global["OpenReleasesPage"] =
+        BindJSCallbackWithRetval(&ODMApp::JS_OpenReleasesPage);
 
     // The UI script has already run; ask it to refresh the disk widget now
     // that the native bridge is available.
     PostJS("if (typeof updateDiskWidget === 'function') updateDiskWidget();");
+
+    // An update check that finished before the page did has its answer waiting
+    // here.
+    std::string pending;
+    {
+        std::lock_guard<std::mutex> lk(update_slot_->mtx);
+        pending = update_slot_->version;
+    }
+    if (!pending.empty()) {
+        std::ostringstream js;
+        js << "if (window.UI && UI.onUpdateAvailable) UI.onUpdateAvailable('"
+           << EscapeJS(pending) << "');";
+        PostJS(js.str());
+    }
 }
 
 // --- JavaScript entry points ----------------------------------------------
@@ -1613,6 +1647,24 @@ ODMApp::JS_OpenWith(const ultralight::JSObject&,
     (void)0; // POSIX implementation not provided yet.
 #endif
 
+    return ultralight::JSValue(true);
+}
+
+ultralight::JSValue
+ODMApp::JS_OpenReleasesPage(const ultralight::JSObject&,
+                            const ultralight::JSArgs&) {
+#if defined(_WIN32)
+    // The URL is a compile-time constant (see UpdateCheck.h) — the interface
+    // has no say in what gets opened, and neither does GitHub's answer.
+    const std::wstring url(updates::kReleasesUrl,
+                           updates::kReleasesUrl + strlen(updates::kReleasesUrl));
+    HINSTANCE h = ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr,
+                                SW_SHOWNORMAL);
+    if (reinterpret_cast<intptr_t>(h) <= 32) {
+        PostJS("UI.onStatus('Could not open the releases page.');");
+        return ultralight::JSValue(false);
+    }
+#endif
     return ultralight::JSValue(true);
 }
 

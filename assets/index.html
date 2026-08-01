@@ -40,6 +40,15 @@
         </nav>
       </div>
       <div class="top-right">
+        <!-- Shown only when a newer release exists; opens the releases page. -->
+        <button id="update-pill" class="update-pill" style="display:none;"
+                title="Open the releases page">
+          <svg class="update-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+            <polyline points="21 3 21 9 15 9"></polyline>
+          </svg>
+          <span id="update-pill-text">Update available</span>
+        </button>
         <div class="search-box">
           <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"></circle>
