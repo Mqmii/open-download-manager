@@ -64,7 +64,12 @@ struct MediaInfo {
 /// available. The cap is "<=", not "==", so a rung that disappeared between
 /// listing the qualities and starting the download degrades one step instead
 /// of failing.
-bool Resolve(const std::string& page_url, MediaInfo* out, int max_height = 0);
+///
+/// `cancel`, when non-null and flipped to true, terminates yt-dlp and makes
+/// this return early — reading a page can take seconds, and "Stop" has to mean
+/// something during those seconds.
+bool Resolve(const std::string& page_url, MediaInfo* out, int max_height = 0,
+             const std::atomic<bool>* cancel = nullptr);
 
 /// The distinct video heights this page offers, best first (2160, 1440, ...),
 /// for the quality menu. Storyboards and audio-only rungs are left out, as are

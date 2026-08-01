@@ -303,7 +303,8 @@ int Run(const std::vector<std::string>& args,
 
 // --- resolve ----------------------------------------------------------------
 
-bool Resolve(const std::string& page_url, MediaInfo* out, int max_height) {
+bool Resolve(const std::string& page_url, MediaInfo* out, int max_height,
+             const std::atomic<bool>* cancel) {
     if (!out) return false;
     if (ExecutablePath().empty()) {
         out->error = "yt-dlp.exe is missing from the ODM folder.";
@@ -338,7 +339,7 @@ bool Resolve(const std::string& page_url, MediaInfo* out, int max_height) {
         if (StartsWith(line, "ODMINFO\x1f")) { meta = line; return; }
         if (StartsWith(line, "https://"))    { urls.push_back(line); return; }
         if (log_tail.size() < 400) log_tail += line + " ";
-    }, nullptr);
+    }, cancel);
 
     if (!meta.empty()) out->identified = true;
 

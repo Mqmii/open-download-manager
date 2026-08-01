@@ -1900,6 +1900,17 @@ async function handleContextMenuAction(action) {
   }
 }
 
+// Every progress, completion and part-info event is routed to its row by id
+// alone, so two rows sharing one id means events land on the wrong download
+// and the loser never leaves "downloading". A timestamp is not enough on its
+// own: two hand-offs arriving back to back are handled in the same
+// millisecond. The counter is what actually guarantees uniqueness; the
+// timestamp only keeps the ids readable and ordered.
+let nextDownloadSeq = 0;
+function newDownloadId() {
+  return 'dl_' + Date.now() + '_' + (++nextDownloadSeq);
+}
+
 // Create a row for `url`, put it on the list and hand it to the engine (or the
 // queue). Shared by the Add-Download modal and the browser hand-off so both
 // produce an identical record — the only differences are where the name and
@@ -1925,7 +1936,7 @@ function addDownload(url, savePath, ctx, preferredName) {
   }
 
   const newDl = {
-    id: 'dl_' + Date.now(),
+    id: newDownloadId(),
     name: name,
     url: url,
     path: savePath || '',

@@ -947,7 +947,13 @@ void Downloader::LaunchParts(const std::string& url, uint64_t total,
                              bool supports_range) {
     // Legacy single-segment path (small files / no Range support / streaming).
     parts_.clear();
-    int n = (total == 0 || total < threshold_) ? 1 : part_count_;
+    // Splitting the file only means anything if the server honors Range. A
+    // server that ignores it answers every worker with 200 and the WHOLE body,
+    // and each of them writes that whole body at its own offset — a file
+    // almost twice the right size, filled with overlapping copies, reported as
+    // finished. One connection is slower but correct.
+    int n = (total == 0 || total < threshold_ || !supports_range)
+                ? 1 : part_count_;
 
     // Single-part resume: a previous run left a pre-allocated partial file
     // (size == total, sparse) plus a sidecar recording how many bytes were
@@ -1206,8 +1212,12 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
         if (stop_requested_.load()) return 0;
 
         if (rc == CURLE_OK) {
-            // Server ignored a sub-range request -> bytes are misaligned.
-            if (end != 0 && http_code != 206 && seg_start > off) {
+            // A 200 carries the WHOLE file, so it is only what we asked for
+            // when this request covers the whole file from byte zero. Any
+            // other chunk would write the entire body at its own offset and
+            // still look complete, so refuse it instead of banking corruption.
+            const bool whole_file = (seg_start == 0 && off == 0 && end == total_);
+            if (end != 0 && http_code != 206 && !whole_file) {
                 if (err) *err = "Server ignored Range request";
                 return 0;
             }
@@ -1326,9 +1336,13 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         if (stop_requested_.load()) { part.ok = false; break; }
 
         if (rc == CURLE_OK) {
-            // If we asked for a sub-range but the server answered 200 (full
-            // body), it ignored Range and the bytes are misaligned -> unusable.
-            if (part.size > 0 && http_code != 206 && seg_start > part.offset) {
+            // Same rule as the chunk worker: a 200 is the whole file, so it
+            // only answers this request when this part IS the whole file.
+            // Otherwise every part would write the full body at its own offset
+            // and report itself finished.
+            const bool whole_file =
+                (seg_start == 0 && part.offset == 0 && part.size == total_);
+            if (part.size > 0 && http_code != 206 && !whole_file) {
                 part.ok = false;
                 std::strncpy(part.error_buf, "Server ignored Range request",
                              CURL_ERROR_SIZE - 1);

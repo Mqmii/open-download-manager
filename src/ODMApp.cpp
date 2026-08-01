@@ -1384,18 +1384,32 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
 
     // Resolving spawns yt-dlp and can take seconds; the mailbox (not `this`)
     // is what the worker carries, so closing the window mid-resolve simply
-    // drops the result.
-    std::thread([this, mail = mail_, page_url, out_path, id, suggested_name,
-                 max_height] {
+    // drops the result. The cancel flag travels the same way, so Stop can
+    // reach into those seconds and yt-dlp dies with them.
+    resolve_cancel_ = std::make_shared<std::atomic<bool>>(false);
+    std::thread([this, mail = mail_, cancel = resolve_cancel_, page_url,
+                 out_path, id, suggested_name, max_height] {
         ytdlp::MediaInfo info;
-        const bool ok = ytdlp::Resolve(page_url, &info, max_height);
+        const bool ok = ytdlp::Resolve(page_url, &info, max_height, cancel.get());
 
         // Everything below touches the engines and the UI, both of which are
         // main-thread only. `this` is safe to capture here because the task
         // only ever runs from OnUpdate, and a closed mailbox never hands it
         // out at all.
-        mail->PostTask([this, page_url, out_path, id, suggested_name,
+        mail->PostTask([this, cancel, page_url, out_path, id, suggested_name,
                         info, ok, max_height] {
+            // This resolve is over either way; let Stop go back to reporting
+            // that there is nothing to stop.
+            if (resolve_cancel_ == cancel) resolve_cancel_.reset();
+            if (cancel->load()) {
+                // The user pressed Stop while the page was being read. Starting
+                // the download now is the one thing they asked us not to do.
+                std::ostringstream js;
+                js << "if (window.UI && UI.onComplete) UI.onComplete('"
+                   << EscapeJS(id) << "', 'stopped', '', '');";
+                PostJS(js.str());
+                return;
+            }
             // The page title is the only sensible file name here; the URL
             // basename is "watch". A name the extension supplied still wins.
             std::string name = suggested_name;
@@ -1448,12 +1462,15 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
 
 void ODMApp::JS_StopDownload(const ultralight::JSObject&,
                              const ultralight::JSArgs&) {
+    // Reading a video page counts as active work even though no engine has
+    // started yet — it is what the user is staring at when they press Stop.
     if (!downloader_.IsRunning() && !hls_.IsRunning() && !dash_.IsRunning() &&
-        !ytdlp_.IsRunning()) {
+        !ytdlp_.IsRunning() && !resolve_cancel_) {
         PostJS("UI.onStatus('No active download to stop.');");
         return;
     }
     PostJS("UI.onStatus('Stopping...');");
+    if (resolve_cancel_) resolve_cancel_->store(true);
     downloader_.Stop();
     hls_.Stop();
     dash_.Stop();
@@ -1817,13 +1834,25 @@ bool DeletePath(const std::string& file_path) {
 // Downloader, HlsDownloader, DashDownloader and YtDlpDownloader each write
 // some of these; the list lives here so cleanup cannot fall behind the code
 // that creates them.
+// Each track file is itself a download, so it carries the same sidecars the
+// output would: HlsDownloader::RunParsedTrack writes "<track>.hlsmeta" and the
+// "<track>.hlsparts" segment DIRECTORY, and DashDownloader::FetchTrack hands
+// the track to Downloader, which writes "<track>.odmprog". Miss one of those
+// and a cancelled stream leaves a folder of segments behind.
 const char* const kPartialSuffixes[] = {
     ".odmprog",       // multi-segment resume sidecar (chunk bitmap)
     ".hlsmeta",       // HLS playlist metadata
     ".hlsparts",      // HLS segment progress
     ".vtrk",          // separate video track, pre-mux
     ".vtrk.hlsmeta",  // playlist metadata for that video track
-    ".atrk"           // separate audio track, pre-mux
+    ".vtrk.hlsparts", // its segment directory
+    ".vtrk.odmprog",  // its resume sidecar (DASH tracks go through Downloader)
+    ".vtrk.id",       // which playlist that track came from
+    ".atrk",          // separate audio track, pre-mux
+    ".atrk.hlsmeta",  // and the same four for the audio track
+    ".atrk.hlsparts",
+    ".atrk.odmprog",
+    ".atrk.id"
 };
 
 } // namespace

@@ -1,5 +1,6 @@
 #include "HlsDownloader.h"
 #include "Muxer.h"
+#include "TrackId.h"
 
 #include <algorithm>
 #include <chrono>
@@ -643,14 +644,8 @@ std::string AudioRenditionUrl(const std::string& body,
     return pick.empty() ? std::string() : ResolveUrl(base_url, pick);
 }
 
-// A finished track leaves its file behind and removes the workspace — that
-// combination marks "already done" when a mux run is resumed.
-bool TrackDone(const fs::path& f) {
-    std::error_code ec;
-    return fs::exists(f, ec) && fs::file_size(f, ec) > 0 &&
-           !fs::exists(f.string() + ".hlsmeta", ec) &&
-           !fs::exists(f.string() + ".hlsparts", ec);
-}
+// TrackDone / WriteTrackId / TrackIdPath live in TrackId.h — a finished track
+// is only "already done" when its marker says it came from this playlist.
 
 } // namespace
 
@@ -725,8 +720,9 @@ void HlsDownloader::Orchestrator() {
         }
     };
 
-    // 3. Video track (skipped when a resumed mux run already finished it).
-    if (!(have_audio && TrackDone(vtrack))) {
+    // 3. Video track (skipped when a resumed mux run already finished it —
+    //    and only when the track on disk came from THIS playlist).
+    if (!(have_audio && TrackDone(vtrack, HashUrl(playlist_url_)))) {
         if (!RunParsedTrack(vtrack)) { track_aborted(); return Finish(); }
     }
 
@@ -744,7 +740,7 @@ void HlsDownloader::Orchestrator() {
         init_done_ = false;
         playlist_url_ = afinal;
         if (!ParseMediaPlaylist(abody, afinal)) return Finish();
-        if (!TrackDone(atrack)) {
+        if (!TrackDone(atrack, HashUrl(playlist_url_))) {
             if (!RunParsedTrack(atrack)) { track_aborted(); return Finish(); }
         }
 
@@ -759,6 +755,8 @@ void HlsDownloader::Orchestrator() {
         std::error_code ec;
         fs::remove(vtrack, ec);
         fs::remove(atrack, ec);
+        fs::remove(TrackIdPath(vtrack), ec);
+        fs::remove(TrackIdPath(atrack), ec);
     }
 
     result_.status = DownloadStatus::Completed;
@@ -946,6 +944,8 @@ bool HlsDownloader::ConcatTo(const fs::path& out_file) {
     std::error_code ec;
     fs::remove_all(parts_dir_, ec);
     fs::remove(meta_path_, ec);
+    // Stamp it before anyone can mistake it for another stream's track.
+    WriteTrackId(out_file, HashUrl(playlist_url_));
     return true;
 }
 

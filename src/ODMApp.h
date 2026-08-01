@@ -203,6 +203,14 @@ private:
         std::string version;
     };
     std::shared_ptr<UpdateSlot> update_slot_ = std::make_shared<UpdateSlot>();
+
+    // Non-null while yt-dlp is reading a video page. Reading can take seconds
+    // and no engine is running yet, so without this "Stop" has nothing to act
+    // on and the download starts anyway once the page comes back. Shared
+    // rather than a plain member because the resolver thread outlives a quit
+    // and would otherwise be reading a destroyed flag. Only ever assigned on
+    // the main thread (start, stop and the post-resolve task all run there).
+    std::shared_ptr<std::atomic<bool>> resolve_cancel_;
 };
 
 } // namespace odm

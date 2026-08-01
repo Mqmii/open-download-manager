@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.2.4)
+        VERSION 0.2.5)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -60,6 +60,8 @@ add_app(${APP_NAME}
     src/BridgeServer.cpp
     src/UpdateCheck.h
     src/UpdateCheck.cpp
+    src/TrackId.h
+    src/TrackId.cpp
 )
 
 # Embed the application icon into the Windows executable's resource section.
@@ -124,6 +126,27 @@ if(ODM_BUILD_TESTS)
         target_link_libraries(cookie_scope_test PRIVATE ws2_32)
     endif()
     add_test(NAME cookie_scope COMMAND cookie_scope_test)
+
+    # Asserts a file is split across connections only when the server honors
+    # Range, and that a wrong file is never reported as finished. Serves
+    # itself over loopback; no network access.
+    add_executable(range_handling_test
+        tools/range_handling_test.cpp
+        src/Downloader.cpp)
+    target_include_directories(range_handling_test PRIVATE src)
+    target_link_libraries(range_handling_test PRIVATE CURL::libcurl)
+    if(WIN32)
+        target_link_libraries(range_handling_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME range_handling COMMAND range_handling_test)
+
+    # Asserts a leftover pre-mux track is only reused when it belongs to the
+    # stream being downloaded. Filesystem only; no network access.
+    add_executable(track_id_test
+        tools/track_id_test.cpp
+        src/TrackId.cpp)
+    target_include_directories(track_id_test PRIVATE src)
+    add_test(NAME track_id COMMAND track_id_test)
 
     # Asserts that the bridge only answers to its own loopback name, so a page
     # that has rebound its domain to 127.0.0.1 cannot read the token. Binds
