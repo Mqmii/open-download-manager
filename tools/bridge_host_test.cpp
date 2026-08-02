@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -25,6 +26,9 @@
 namespace {
 
 constexpr uint16_t kPort = 47931;   // not 47923: a running ODM must not clash
+
+// A well-formed extension id that is not ours (32 chars, a-p).
+constexpr const char* kForeignExtId = "abcdefghijklmnopabcdefghijklmnop";
 
 int g_failures = 0;
 
@@ -61,11 +65,23 @@ int StatusOf(const std::string& resp) {
     return std::atoi(resp.c_str() + 9);
 }
 
-std::string Get(const std::string& path, const std::string& host_header) {
+std::string Get(const std::string& path, const std::string& host_header,
+                const std::string& origin = std::string()) {
     std::string r = "GET " + path + " HTTP/1.1\r\n";
     if (!host_header.empty()) r += "Host: " + host_header + "\r\n";
+    if (!origin.empty()) r += "Origin: " + origin + "\r\n";
     r += "Connection: close\r\n\r\n";
     return Send(r);
+}
+
+// Value of an Access-Control-Allow-Origin header, "" when there isn't one.
+std::string AllowOrigin(const std::string& resp) {
+    const char* key = "\r\nAccess-Control-Allow-Origin: ";
+    const size_t p = resp.find(key);
+    if (p == std::string::npos) return {};
+    const size_t vs = p + strlen(key);
+    const size_t ve = resp.find("\r\n", vs);
+    return resp.substr(vs, ve - vs);
 }
 
 std::string Post(const std::string& path, const std::string& host_header,
@@ -95,6 +111,10 @@ int main() {
     }
     const std::string token = server.Token();
     const std::string port  = std::to_string(kPort);
+    const std::string ours    = std::string("chrome-extension://") +
+                                odm::kExtensionId;
+    const std::string foreign = std::string("chrome-extension://") +
+                                kForeignExtId;
 
     std::printf("the names we answer to\n");
     {
@@ -133,7 +153,7 @@ int main() {
     {
         const std::string body = "{\"url\":\"https://example.test/f.bin\"}";
         const std::string r = Post("/add", "127.0.0.1:" + port, token, body,
-                                   "chrome-extension://abcdefghijklmnop");
+                                   ours);
         Check("POST /add from the extension -> 200", StatusOf(r) == 200);
         Check("  and the payload reached the app", adds.load() == 1);
     }
@@ -145,12 +165,54 @@ int main() {
     }
     Check("OPTIONS preflight via 127.0.0.1:port -> 204",
           StatusOf(Send("OPTIONS /add HTTP/1.1\r\nHost: 127.0.0.1:" + port +
-                        "\r\nOrigin: chrome-extension://abcdefghijklmnop\r\n"
+                        "\r\nOrigin: " + ours + "\r\n"
                         "Connection: close\r\n\r\n")) == 204);
     Check("OPTIONS preflight under a foreign Host -> 403",
           StatusOf(Send("OPTIONS /add HTTP/1.1\r\nHost: evil.example:" + port +
-                        "\r\nOrigin: chrome-extension://abcdefghijklmnop\r\n"
+                        "\r\nOrigin: " + ours + "\r\n"
                         "Connection: close\r\n\r\n")) == 403);
+
+    // Every chrome-extension:// origin used to look alike, because an unpacked
+    // extension's id is derived from the folder it was loaded from and so
+    // differed per machine. extension/manifest.json now pins ours with a fixed
+    // `key`, which is what lets the origin be named instead of wildcarded —
+    // ANOTHER extension is now just another stranger.
+    std::printf("only our own extension is our extension\n");
+    {
+        const std::string r = Get("/ping", "127.0.0.1:" + port, ours);
+        Check("GET /ping from our extension -> 200 with the token",
+              StatusOf(r) == 200 && r.find(token) != std::string::npos);
+        Check("  and its origin is echoed back for CORS",
+              AllowOrigin(r) == ours);
+    }
+    {
+        const std::string r = Get("/ping", "127.0.0.1:" + port, foreign);
+        Check("GET /ping from another extension -> no token",
+              r.find(token) == std::string::npos);
+        Check("  and no CORS echo, so it cannot read the answer either",
+              AllowOrigin(r).empty());
+    }
+    {
+        const std::string body = "{\"url\":\"https://example.test/evil.bin\"}";
+        const std::string r = Post("/add", "127.0.0.1:" + port, token, body,
+                                   foreign);
+        Check("POST /add from another extension -> 403", StatusOf(r) == 403);
+        Check("  and nothing was queued", adds.load() == 1);
+    }
+    Check("POST /ytformats from another extension -> 403",
+          StatusOf(Post("/ytformats", "127.0.0.1:" + port, token,
+                        "{\"url\":\"https://www.youtube.com/watch?v=abcdef\"}",
+                        foreign)) == 403);
+    Check("OPTIONS preflight from another extension gets no CORS echo",
+          AllowOrigin(Send("OPTIONS /add HTTP/1.1\r\nHost: 127.0.0.1:" + port +
+                           "\r\nOrigin: " + foreign + "\r\n"
+                           "Connection: close\r\n\r\n")).empty());
+    // A prefix test would accept a longer string starting with our id.
+    Check("an origin that merely starts with our id -> 403",
+          StatusOf(Post("/add", "127.0.0.1:" + port, token,
+                        "{\"url\":\"https://example.test/f.bin\"}",
+                        ours + ".evil.example")) == 403);
+    Check("still nothing extra was queued", adds.load() == 1);
 
     std::printf("the pre-existing gates still hold\n");
     Check("POST /add with a wrong token -> 401",
@@ -160,7 +222,13 @@ int main() {
           StatusOf(Post("/add", "127.0.0.1:" + port, token,
                         "{\"url\":\"https://example.test/f.bin\"}",
                         "https://evil.example")) == 403);
-    Check("nothing extra was queued", adds.load() == 1);
+    // A local process has no Origin to present and can read bridge.token off
+    // the disk anyway; refusing it here would only break the hand-off our own
+    // extension makes (Chrome omits Origin for a loopback host permission).
+    Check("POST /add with no Origin at all still works",
+          StatusOf(Post("/add", "127.0.0.1:" + port, token,
+                        "{\"url\":\"https://example.test/f.bin\"}")) == 200);
+    Check("exactly one more was queued", adds.load() == 2);
 
     server.Stop();
     WSACleanup();

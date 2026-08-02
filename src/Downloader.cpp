@@ -26,7 +26,10 @@ std::string UniquifyPath(const std::string& path) {
         fs::exists(path + ".hlsmeta", ec)  ||
         fs::exists(path + ".hlsparts", ec) ||
         fs::exists(path + ".vtrk", ec)     ||
-        fs::exists(path + ".vtrk.hlsmeta", ec))
+        fs::exists(path + ".vtrk.hlsmeta", ec) ||
+        // The yt-dlp fallback writes straight into the output file, so its
+        // own partial IS this path; the plan file beside it is the evidence.
+        fs::exists(path + ".ytdlp", ec))
         return path;
     const fs::path p(path);
     const std::string stem = p.stem().string();
@@ -37,6 +40,12 @@ std::string UniquifyPath(const std::string& path) {
         if (!fs::exists(cand, ec)) return cand.string();
     }
     return path;   // absurd collision count: fall back to the old behavior
+}
+
+void FinalizeCancelled(DownloadResult& res, bool cancelled) {
+    if (!cancelled || res.status == DownloadStatus::Completed) return;
+    res.status = DownloadStatus::Stopped;
+    res.error_message = "Download stopped.";
 }
 
 // --- libcurl helpers -------------------------------------------------------
@@ -70,6 +79,24 @@ static int CurlProgressXfer(void* clientp,
 struct WriteCtx {
     std::atomic<uint64_t>* done_counter;
     std::fstream*         out;
+    // How many bytes this request is still entitled to write, counted down as
+    // they arrive. `limited` is separate from a zero count on purpose: once a
+    // window is exactly filled `remaining` IS 0, and that must keep meaning
+    // "not one more byte" rather than turning into "no limit". Unlimited is
+    // the streaming case, where the whole response IS the file and there is
+    // nothing after it to overwrite.
+    bool                  limited   = false;
+    uint64_t              remaining = 0;
+    // Set when a write was refused for running past the window. This is a
+    // property of the SERVER, not of the connection, so it is worth telling
+    // apart from an ordinary write error: retrying earns the same answer five
+    // more times, a minute later, for nothing.
+    bool                  overflowed = false;
+
+    void LimitTo(uint64_t bytes) {
+        limited = true; remaining = bytes; overflowed = false;
+    }
+    void NoLimit() { limited = false; remaining = 0; overflowed = false; }
 };
 
 // RAII guard that cleans up a CURL* on every exit path.
@@ -79,13 +106,29 @@ struct CurlGuard {
 };
 
 static size_t CurlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    size_t bytes = size * nmemb;
+    const size_t bytes = size * nmemb;
     auto* ctx = static_cast<WriteCtx*>(userdata);
+
+    // Every connection writes into ONE shared output file at its own offset,
+    // so a response that runs past the range it was asked for does not just
+    // waste bytes — it lands on top of the chunk that starts where this one
+    // ends. The 206 check after curl_easy_perform() catches the server that
+    // answers 200 with the whole body, but by then the damage is already on
+    // disk, and a server that answers 206 with a WIDER range than requested
+    // slips past it entirely. So the limit is enforced here, as the bytes
+    // arrive: refuse the overflow and let libcurl fail the transfer, which
+    // sends the chunk down the ordinary retry path.
+    if (ctx->limited && bytes > ctx->remaining) {
+        ctx->overflowed = true;
+        return 0;
+    }
+
     ctx->out->write(ptr, bytes);
     // A failed write (disk full, I/O error) must NOT advance the counter or
     // we'd report a corrupt file as complete. Returning fewer bytes than
     // requested makes libcurl abort the transfer with a write error.
     if (!ctx->out->good()) return 0;
+    if (ctx->limited) ctx->remaining -= bytes;
     *ctx->done_counter += bytes;
     return bytes;
 }
@@ -325,7 +368,8 @@ DownloadResult Downloader::WaitForCompletion() {
 }
 
 void Downloader::Start(const std::string& url, const std::string& output_path,
-                       const std::string& id, const RequestContext& ctx) {
+                       const std::string& id, const RequestContext& ctx,
+                       const std::string& resume_key) {
     // Reject re-entrant starts, and join any previous run's threads before
     // replacing them (otherwise std::thread::operator= terminates the process).
     // The mutex makes the check-and-join atomic: without it, two concurrent
@@ -347,6 +391,7 @@ void Downloader::Start(const std::string& url, const std::string& output_path,
         req_headers_ = curl_slist_append(req_headers_, h.c_str());
 
     url_         = url;
+    resume_key_  = resume_key;
     output_path_ = output_path;
     id_          = id;
     stop_requested_.store(false);
@@ -790,7 +835,7 @@ std::vector<uint8_t> Downloader::LoadProgress(const std::string& output_path,
     // silently corrupt the file. This also bounds the allocation below.
     if (magic != kSidecarMagic || version != kSidecarVersion ||
         total != total_ || chunk_size != want_chunk_size ||
-        chunks != want_chunks || url_hash != HashUrl(url_))
+        chunks != want_chunks || url_hash != HashUrl(ResumeIdentity()))
         return bm;
 
     if (done > total) return bm;   // impossible: stale/corrupt sidecar
@@ -828,7 +873,7 @@ void Downloader::SaveAllProgress() {
     if (!f) return;
     uint32_t magic = kSidecarMagic, version = kSidecarVersion;
     uint64_t total = total_;
-    uint64_t url_hash = HashUrl(url_);
+    uint64_t url_hash = HashUrl(ResumeIdentity());
     f.write(reinterpret_cast<const char*>(&magic),      sizeof(magic));
     f.write(reinterpret_cast<const char*>(&version),    sizeof(version));
     f.write(reinterpret_cast<const char*>(&total),      sizeof(total));
@@ -1034,13 +1079,39 @@ void Downloader::LaunchChunks(const std::string& url, uint64_t total) {
     completed_.reset(new std::atomic<uint8_t>[total_chunks_]());
     claimed_.reset(new std::atomic<uint8_t>[total_chunks_]());
 
+    // A sidecar describes bytes sitting in the output FILE, and LoadProgress
+    // only validates the sidecar's own header — size, chunking, URL — never
+    // the file. So the partial file has to be checked here, and it has to
+    // happen BEFORE Preallocate: that call recreates a missing or wrong-sized
+    // file as a fresh sparse one of exactly `total` bytes, which destroys the
+    // only evidence that the data is gone. Skipping this check meant a file
+    // the user had deleted (or replaced, or truncated) while its .odmprog
+    // survived came back as "completed" with every resumed chunk still a hole
+    // of zeros. The single-part path in LaunchParts has always checked this;
+    // the chunked path never did.
+    bool partial_intact = false;
+    {
+        std::error_code ec;
+        partial_intact = fs::exists(output_path_, ec) &&
+                         fs::file_size(output_path_, ec) == total;
+    }
+
     Preallocate(output_path_, total);
 
     // Restore completed chunks from the resume sidecar. LoadProgress only
     // returns a bitmap when its header matches this exact job, so it's either
     // empty or exactly total_chunks_ bytes long.
     uint64_t sidecar_done = 0;
-    std::vector<uint8_t> bm = LoadProgress(output_path_, sidecar_done);
+    std::vector<uint8_t> bm;
+    if (partial_intact) {
+        bm = LoadProgress(output_path_, sidecar_done);
+    } else {
+        // Nothing to resume into. Drop the orphaned sidecar so it cannot
+        // mislead a later run either (UniquifyPath reads it as "a download is
+        // in progress here" and pins the path on its account).
+        std::error_code ec;
+        fs::remove(output_path_ + ".odmprog", ec);
+    }
     uint64_t resumed = 0, resumed_chunks = 0;
     if (bm.size() >= total_chunks_) {
         for (uint64_t i = 0; i < total_chunks_; ++i) {
@@ -1170,6 +1241,11 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
 
         uint64_t seg_start = off + done.load();   // resume from what we have
         xfer.prev = 0;   // reset for this curl_easy_perform call
+        // What this attempt may write, re-derived each time because a short
+        // read moved seg_start forward. `end == 0` is the streaming case,
+        // which owns the whole file and so has no ceiling.
+        if (end == 0) ctx.NoLimit();
+        else          ctx.LimitTo(end > seg_start ? end - seg_start : 0);
         std::string range;
         if (end == 0) range.clear();                              // streaming
         else range = std::to_string(seg_start) + "-" +
@@ -1210,6 +1286,13 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
         if (stop_requested_.load()) return 0;
+
+        // A server that overshoots the window will overshoot it again; there
+        // is nothing here for the backoff to recover from.
+        if (ctx.overflowed) {
+            if (err) *err = "Server sent more data than the requested range";
+            return 0;
+        }
 
         if (rc == CURLE_OK) {
             // A 200 carries the WHOLE file, so it is only what we asked for
@@ -1284,6 +1367,15 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         uint64_t before    = part.done.load();
         uint64_t seg_start = part.offset + before;
         xfer.prev = 0;   // reset for this curl_easy_perform call
+        // Same ceiling as the chunk worker: this part owns [offset, offset+size)
+        // and nothing beyond it. A zero size is the streaming case (one part,
+        // whole file), where there is nothing after it to protect.
+        if (part.size == 0) {
+            ctx.NoLimit();
+        } else {
+            const uint64_t part_end = part.offset + part.size;
+            ctx.LimitTo(part_end > seg_start ? part_end - seg_start : 0);
+        }
         std::string range;
         if (part.size == 0) {
             range.clear();                      // stream the whole file
@@ -1334,6 +1426,16 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         out.flush();
 
         if (stop_requested_.load()) { part.ok = false; break; }
+
+        // Same as the chunk worker: overshooting the window is the server's
+        // habit, not a hiccup, so there is nothing to retry.
+        if (ctx.overflowed) {
+            part.ok = false;
+            std::strncpy(part.error_buf,
+                         "Server sent more data than the requested range",
+                         CURL_ERROR_SIZE - 1);
+            break;
+        }
 
         if (rc == CURLE_OK) {
             // Same rule as the chunk worker: a 200 is the whole file, so it

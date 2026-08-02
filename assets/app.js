@@ -338,6 +338,15 @@ function throttledSave() {
 }
 
 // ---- Auto-Retry Helpers ----
+// How many times a failed download re-launches itself before the row is left
+// alone. Auto-retry exists for the transient half of "failed" — a dropped
+// connection, a CDN hiccup — and those recover within a handful of attempts.
+// The permanent half (404, expired signed URL, dead host) never does, and
+// without a ceiling those rows re-requested the same URL once a minute for as
+// long as the app stayed open. Resume/Restart resets the counter, so the user
+// can always ask for more by hand.
+const MAX_AUTO_RETRIES = 5;
+
 // Compute the retry delay for a given attempt count (exponential backoff,
 // starting at 2s, doubling each time, capped at 60s).
 function getRetryDelay(count) {
@@ -345,8 +354,13 @@ function getRetryDelay(count) {
 }
 
 // Schedule an auto-retry for a failed download. Shows a countdown in the
-// timeLeft column while waiting, then re-launches the download.
+// timeLeft column while waiting, then re-launches the download. Returns false
+// when the row has spent its attempts and was left in the failed state.
 function scheduleRetry(dl) {
+  if ((dl._retryCount || 0) >= MAX_AUTO_RETRIES) {
+    dl.timeLeft = '--';
+    return false;
+  }
   const delay = getRetryDelay(dl._retryCount || 0);
   const retryAt = Date.now() + delay;
 
@@ -370,6 +384,7 @@ function scheduleRetry(dl) {
     updateToolbarState();
     requestStart(dl);
   }, delay);
+  return true;
 }
 
 // Cancel any pending auto-retry for a download.
@@ -2311,10 +2326,15 @@ window.UI = {
         dl.timeLeft = '--';
         dl.speed = '';
 
-        showStatusToast('Download failed: ' + (errorMsg || 'Unknown error'));
-
-        // Auto-retry with exponential backoff
-        scheduleRetry(dl);
+        // Auto-retry with exponential backoff, up to MAX_AUTO_RETRIES. Once
+        // those are spent the row stays failed until the user asks again —
+        // say so, instead of silently going quiet after a run of countdowns.
+        if (scheduleRetry(dl)) {
+          showStatusToast('Download failed: ' + (errorMsg || 'Unknown error'));
+        } else {
+          showStatusToast('Download failed after ' + MAX_AUTO_RETRIES +
+                          ' retries: ' + (errorMsg || 'Unknown error'));
+        }
       }
 
       saveData();

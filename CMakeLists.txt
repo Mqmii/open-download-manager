@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.2.5)
+        VERSION 0.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -114,6 +114,29 @@ add_custom_command(TARGET ${APP_NAME} POST_BUILD
 option(ODM_BUILD_TESTS "Build the test executables" OFF)
 if(ODM_BUILD_TESTS)
     enable_testing()
+
+    # The UI and the extension are plain scripts with no build step, so their
+    # tests run under Node. When Node is missing those tests are skipped rather
+    # than failed: a C++-only toolchain should still get a green `ctest`.
+    find_program(ODM_NODE_EXECUTABLE NAMES node nodejs)
+    if(NOT ODM_NODE_EXECUTABLE)
+        message(STATUS "node not found -- the JavaScript tests will be skipped")
+    endif()
+    function(odm_add_js_test name script)
+        if(ODM_NODE_EXECUTABLE)
+            add_test(NAME ${name}
+                     COMMAND "${ODM_NODE_EXECUTABLE}"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/${script}")
+        endif()
+    endfunction()
+
+    # Asserts that a permanently failing download stops re-launching itself
+    # after a bounded number of attempts. Pure logic; no network access.
+    odm_add_js_test(retry_policy tools/retry_policy_test.js)
+
+    # Asserts the extension id the bridge trusts is the one Chrome derives
+    # from the manifest key. Reads both files; no network access.
+    odm_add_js_test(extension_identity tools/extension_identity_test.js)
     # Asserts that hand-off cookies stay on the site they were captured on
     # when a download is redirected. Talks to two throwaway HTTP servers it
     # starts on loopback; no network access.
@@ -140,6 +163,39 @@ if(ODM_BUILD_TESTS)
     endif()
     add_test(NAME range_handling COMMAND range_handling_test)
 
+    # Asserts a resume sidecar is only trusted while the partial file it
+    # describes is still on disk, so a deleted or replaced download can never
+    # come back as a zero-holed "completed" file. Serves itself over loopback.
+    add_executable(resume_integrity_test
+        tools/resume_integrity_test.cpp
+        src/Downloader.cpp
+        src/YtDlpDownloader.cpp
+        src/YtDlp.cpp
+        src/Muxer.cpp)
+    target_include_directories(resume_integrity_test PRIVATE src ${FFMPEG_INCLUDE_DIRS})
+    target_link_directories(resume_integrity_test PRIVATE ${FFMPEG_LIBRARY_DIRS})
+    target_link_libraries(resume_integrity_test PRIVATE CURL::libcurl ${FFMPEG_LIBRARIES})
+    if(WIN32)
+        target_link_libraries(resume_integrity_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME resume_integrity COMMAND resume_integrity_test)
+
+    # Asserts that cancelling a job is reported as Stopped and never as Failed
+    # (the UI auto-retries a failure, so the difference is whether a cancelled
+    # download restarts itself). Serves itself over loopback; no network access.
+    add_executable(stop_status_test
+        tools/stop_status_test.cpp
+        src/DashDownloader.cpp
+        src/Downloader.cpp
+        src/Muxer.cpp)
+    target_include_directories(stop_status_test PRIVATE src ${FFMPEG_INCLUDE_DIRS})
+    target_link_directories(stop_status_test PRIVATE ${FFMPEG_LIBRARY_DIRS})
+    target_link_libraries(stop_status_test PRIVATE CURL::libcurl ${FFMPEG_LIBRARIES})
+    if(WIN32)
+        target_link_libraries(stop_status_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME stop_status COMMAND stop_status_test)
+
     # Asserts a leftover pre-mux track is only reused when it belongs to the
     # stream being downloaded. Filesystem only; no network access.
     add_executable(track_id_test
@@ -162,6 +218,20 @@ if(ODM_BUILD_TESTS)
         target_link_libraries(bridge_host_test PRIVATE ws2_32)
     endif()
     add_test(NAME bridge_host COMMAND bridge_host_test)
+
+    # Asserts an extra request header can never end its own header line, so a
+    # hand-off cannot split one request into two. Binds 127.0.0.1:47932.
+    add_executable(header_injection_test
+        tools/header_injection_test.cpp
+        src/BridgeServer.cpp
+        src/YtDlp.cpp)
+    target_include_directories(header_injection_test PRIVATE src)
+    target_compile_definitions(header_injection_test PRIVATE
+        ODM_VERSION="${PROJECT_VERSION}")
+    if(WIN32)
+        target_link_libraries(header_injection_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME header_injection COMMAND header_injection_test)
 
     # Asserts the update check only speaks up for a genuinely newer release,
     # and survives whatever GitHub answers. No network access.

@@ -41,12 +41,13 @@ bool DashDownloader::Start(const std::string& video_url,
                            const std::string& audio_url,
                            const std::string& output_path,
                            const std::string& id,
-                           const RequestContext& ctx) {
+                           const RequestContext& ctx,
+                           const std::string& resume_key) {
     if (running_.exchange(true)) return false;   // one job at a time
     cancelled_.store(false);
     if (thread_.joinable()) thread_.join();      // previous run, already done
     thread_ = std::thread(&DashDownloader::Run, this, video_url, audio_url,
-                          output_path, id, ctx);
+                          output_path, id, ctx, resume_key);
     return true;
 }
 
@@ -66,7 +67,15 @@ std::string DashDownloader::GetPartInfoJson(const std::string& id) {
 bool DashDownloader::FetchTrack(const std::string& url, const std::string& path,
                                 const std::string& id, const RequestContext& ctx,
                                 double base_bytes, double extra_total,
+                                const std::string& resume_key,
                                 std::string* error) {
+    // A Stop that arrived while the previous track was finishing must not be
+    // answered by starting the next one: Downloader::Start clears its own stop
+    // flag, so a cancel that landed before this call would be forgotten.
+    if (cancelled_.load()) {
+        if (error) *error = "Download stopped.";
+        return false;
+    }
     dl_.SetPartCount(part_count_);
     dl_.SetSpeedLimit(speed_limit_);
     // Rewrite the inner job's numbers so the two tracks read as one download.
@@ -80,7 +89,9 @@ bool DashDownloader::FetchTrack(const std::string& url, const std::string& path,
     });
     // The inner path-resolved callback is deliberately dropped: the track temp
     // is not a path the UI should ever persist.
-    dl_.Start(url, path, id, ctx);
+    dl_.Start(url, path, id, ctx, resume_key);
+    // ...and a Stop that landed *during* Start() was cleared by it; re-arm.
+    if (cancelled_.load()) dl_.Stop();
     const DownloadResult r = dl_.WaitForCompletion();
     if (r.status != DownloadStatus::Completed) {
         if (error) *error = r.error_message;
@@ -91,7 +102,14 @@ bool DashDownloader::FetchTrack(const std::string& url, const std::string& path,
 
 void DashDownloader::Run(std::string video_url, std::string audio_url,
                          std::string output_path, std::string id,
-                         RequestContext ctx) {
+                         RequestContext ctx, std::string resume_key) {
+    // Each track keeps its own bitmap beside its own temp file; the suffixes
+    // make sure one can never be mistaken for the other. An empty key stays
+    // empty so Downloader falls back to hashing the URL, as before.
+    const std::string vkey = resume_key.empty() ? std::string()
+                                                : resume_key + "#v";
+    const std::string akey = resume_key.empty() ? std::string()
+                                                : resume_key + "#a";
     DownloadResult res;
     res.id = id;
     res.file_path = output_path;
@@ -99,17 +117,22 @@ void DashDownloader::Run(std::string video_url, std::string audio_url,
 
     const bool have_audio = !audio_url.empty();
 
-    // No audio rung? Then this is an ordinary single-file download.
-    if (!have_audio) {
-        std::string err;
-        if (FetchTrack(video_url, output_path, id, ctx, 0, 0, &err)) {
-            res.status = DownloadStatus::Completed;
-        } else {
-            res.error_message = cancelled_.load() ? "Download stopped." : err;
-        }
+    auto finish = [&] {
+        FinalizeCancelled(res, cancelled_.load());
         if (on_path_) on_path_(id, output_path);
         running_.store(false);
         if (on_complete_) on_complete_(res);
+    };
+
+    // No audio rung? Then this is an ordinary single-file download.
+    if (!have_audio) {
+        std::string err;
+        if (FetchTrack(video_url, output_path, id, ctx, 0, 0, vkey, &err)) {
+            res.status = DownloadStatus::Completed;
+        } else {
+            res.error_message = err;
+        }
+        finish();
         return;
     }
 
@@ -120,24 +143,22 @@ void DashDownloader::Run(std::string video_url, std::string audio_url,
 
     do {
         std::string err;
-        if (!FetchTrack(video_url, vpath, id, ctx, 0, 0, &err)) {
-            res.error_message = cancelled_.load() ? "Download stopped."
-                                                  : ("Video track download failed: " + err);
+        if (!FetchTrack(video_url, vpath, id, ctx, 0, 0, vkey, &err)) {
+            res.error_message = "Video track download failed: " + err;
             break;
         }
-        if (cancelled_.load()) { res.error_message = "Download stopped."; break; }
+        if (cancelled_.load()) break;
 
         double vbytes = 0;
         std::error_code ec;
         const auto vsize = fs::file_size(fs::u8path(vpath), ec);
         if (!ec) vbytes = static_cast<double>(vsize);
 
-        if (!FetchTrack(audio_url, apath, id, ctx, vbytes, vbytes, &err)) {
-            res.error_message = cancelled_.load() ? "Download stopped."
-                                                  : ("Audio track download failed: " + err);
+        if (!FetchTrack(audio_url, apath, id, ctx, vbytes, vbytes, akey, &err)) {
+            res.error_message = "Audio track download failed: " + err;
             break;
         }
-        if (cancelled_.load()) { res.error_message = "Download stopped."; break; }
+        if (cancelled_.load()) break;
 
         // Lossless remux: both tracks keep their codecs (VP9/AV1 + AAC), so
         // this is a container rewrite, not a transcode.
@@ -158,9 +179,7 @@ void DashDownloader::Run(std::string video_url, std::string audio_url,
         res.status = DownloadStatus::Completed;
     } while (false);
 
-    if (on_path_) on_path_(id, output_path);
-    running_.store(false);
-    if (on_complete_) on_complete_(res);
+    finish();
 }
 
 } // namespace odm

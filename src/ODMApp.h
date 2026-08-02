@@ -114,9 +114,14 @@ private:
     // route it to an engine. Split out because a YouTube job cannot get here
     // synchronously — its file name and media URLs only exist after yt-dlp has
     // answered, so that path re-enters through here from the main thread.
+    // `resume_key` binds the resume sidecar to something steadier than the
+    // media URL. It is empty for everything whose URL is stable, and the watch
+    // page for a YouTube job, whose signed rung URLs are re-resolved (and so
+    // differ) on every launch.
     void BeginDownload(std::string url, std::string out_path, std::string id,
                        RequestContext ctx, std::string suggested_name,
-                       std::string job_type, std::string audio_url);
+                       std::string job_type, std::string audio_url,
+                       std::string resume_key = std::string());
 
     // Ask yt-dlp for the media URLs of a watch page on a worker thread, then
     // continue in BeginDownload on the main thread.

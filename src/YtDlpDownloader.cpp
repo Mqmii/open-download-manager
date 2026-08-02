@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -93,7 +94,12 @@ bool YtDlpDownloader::FetchTrack(const std::string& page_url,
                                  std::string* error) {
     std::vector<std::string> args = {
         "--no-warnings", "--no-playlist", "--newline", "--encoding", "utf-8",
-        "--no-part", "--no-mtime", "--no-continue", "--socket-timeout", "20",
+        // --continue, not --no-continue: with --no-part yt-dlp writes straight
+        // to the target, so a partial left by a stopped run is exactly what it
+        // needs to pick up from. Run() only lets a partial survive when the
+        // plan file says it was fetched with this same format selection, so
+        // there is nothing here for --continue to append to by mistake.
+        "--no-part", "--no-mtime", "--continue", "--socket-timeout", "20",
         // yt-dlp's m4a "fixup" shells out to ffmpeg, which we do not ship.
         // libavformat reads the un-fixed track fine (that is what Muxer gets
         // on the fast path too), so skip the step rather than let it fail.
@@ -140,6 +146,33 @@ bool YtDlpDownloader::FetchTrack(const std::string& page_url,
     return false;
 }
 
+std::string YtDlpDownloader::PlanPath(const std::string& output_path) {
+    return output_path + ".ytdlp";
+}
+
+// What a partial on disk would have to have been fetched with to be worth
+// continuing. yt-dlp appends to an existing file, so resuming across a change
+// of quality would splice two different renditions into one broken output —
+// the plan is what tells the two apart.
+std::string YtDlpDownloader::PlanFor(int max_height) {
+    return "odm-ytdlp-1\n" + std::to_string(max_height) + "\n" +
+           ytdlp::VideoOnlyFormat(max_height) + "\n" +
+           ytdlp::AudioOnlyFormat() + "\n";
+}
+
+std::string YtDlpDownloader::ReadPlan(const std::string& path) {
+    std::ifstream f(fs::u8path(path), std::ios::binary);
+    if (!f) return {};
+    return std::string((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+}
+
+void YtDlpDownloader::WritePlan(const std::string& path,
+                                const std::string& plan) {
+    std::ofstream f(fs::u8path(path), std::ios::binary | std::ios::trunc);
+    if (f) f.write(plan.data(), static_cast<std::streamsize>(plan.size()));
+}
+
 void YtDlpDownloader::Run(std::string page_url, std::string output_path,
                           std::string id) {
     DownloadResult res;
@@ -149,7 +182,20 @@ void YtDlpDownloader::Run(std::string page_url, std::string output_path,
 
     const std::string vpath = output_path + ".vtrk";
     const std::string apath = output_path + ".atrk";
+    const std::string plan_path = PlanPath(output_path);
+    const std::string plan = PlanFor(max_height_);
     std::error_code ec;
+
+    // Anything on disk that was fetched under a different plan (another
+    // quality, an upgraded yt-dlp with a different selector) cannot be
+    // continued into — drop it and start clean. A matching plan means the
+    // partials below are ours and --continue may pick them up.
+    if (ReadPlan(plan_path) != plan) {
+        fs::remove(fs::u8path(vpath), ec);
+        fs::remove(fs::u8path(apath), ec);
+        fs::remove(fs::u8path(output_path), ec);
+    }
+    WritePlan(plan_path, plan);
 
     // Preferred route: the two tracks separately, joined by our own Muxer.
     // Letting yt-dlp merge would mean shipping ffmpeg.exe for a job the app
@@ -182,6 +228,21 @@ void YtDlpDownloader::Run(std::string page_url, std::string output_path,
         }
     }
 
+    // A stop is a pause: leave the partial tracks and the plan exactly where
+    // they are so the next launch continues instead of starting over, and do
+    // not fall through to the last-resort attempt — the user asked for less
+    // work, not more.
+    if (cancelled_.load()) {
+        res.error_message = err;
+        FinalizeCancelled(res, true);
+        if (on_path_) on_path_(id, output_path);
+        running_.store(false);
+        if (on_complete_) on_complete_(res);
+        return;
+    }
+
+    // A genuine failure, on the other hand, says nothing about whether what
+    // landed is usable, so it goes.
     if (res.status != DownloadStatus::Completed) {
         fs::remove(fs::u8path(vpath), ec);
         fs::remove(fs::u8path(apath), ec);
@@ -190,8 +251,7 @@ void YtDlpDownloader::Run(std::string page_url, std::string output_path,
     // Last resort: a single already-muxed rung. Lower quality, but a video
     // with sound beats an error — and this is the path that answers for the
     // uploads where no separate audio track is offered at all.
-    if (res.status != DownloadStatus::Completed && !cancelled_.load()) {
-        fs::remove(fs::u8path(output_path), ec);
+    if (res.status != DownloadStatus::Completed) {
         // No "+" in this selector: a merged selection would send yt-dlp
         // looking for an ffmpeg.exe we do not ship.
         const std::string cap = max_height_ > 0
@@ -204,11 +264,22 @@ void YtDlpDownloader::Run(std::string page_url, std::string output_path,
                 res.downloaded_bytes = res.total_bytes;
             }
             res.status = DownloadStatus::Completed;
+        } else if (cancelled_.load()) {
+            // Stopped during the fallback: same rule as above, keep the
+            // partial output and the plan that describes it.
+            res.error_message = err;
+            FinalizeCancelled(res, true);
+            if (on_path_) on_path_(id, output_path);
+            running_.store(false);
+            if (on_complete_) on_complete_(res);
+            return;
         }
     }
 
-    if (res.status != DownloadStatus::Completed)
-        res.error_message = cancelled_.load() ? "Download stopped." : err;
+    if (res.status != DownloadStatus::Completed) res.error_message = err;
+    // Nothing left to continue: neither a finished job nor a failed one has a
+    // partial worth keeping a plan for.
+    fs::remove(fs::u8path(plan_path), ec);
 
     if (on_path_) on_path_(id, output_path);
     running_.store(false);

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "ODM — Download Interceptor",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Captures downloads and page videos and hands them to the ODM app. The ODM app must be running.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqtFadSy2W6LJz3M1pUEMIpK6CkaXzJ0trK3rkmp0z9koLlXRiHwpTW4ejFF7tqaiW7bxBn6UJYURytuOkuGuA3XDe+LveX0qp149fnmkmAPmzKrz1i36G3pk/W1WhQgWe98GVoPkX6lkSq8GtqYIMccjByU66vS6lqjSEkwzwoHVFYM3VtGqMMJ+aiGJRJVZ/3vYSK64uEdKYkpdlb3cPLpaoYMbPqbx2SHizqowwA5N9W/WUBvB8uPSrlOe5ODSRYqW+qAOXb1c1YCK36VbPWM01G9au79xpN937LbXRpHh4QaGhwo+cClM0uzbpB+Sa7q1YtsQS8pHjkLFEYRHbQIDAQAB",
   "permissions": [
     "downloads",
     "contextMenus",

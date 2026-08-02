@@ -56,11 +56,17 @@ public:
     /// Start a paired job. Returns false when one is already running.
     /// `audio_url` may be empty, in which case this degrades to a plain
     /// single-file download of `video_url` (no mux step).
+    ///
+    /// `resume_key` is passed down to each track's Downloader (see its Start).
+    /// It matters here specifically: a YouTube job re-resolves its rungs on
+    /// every launch and the signed URLs differ every time, so without a
+    /// steadier identity Resume would restart both tracks from zero.
     bool Start(const std::string& video_url,
                const std::string& audio_url,
                const std::string& output_path,
                const std::string& id,
-               const RequestContext& ctx);
+               const RequestContext& ctx,
+               const std::string& resume_key = std::string());
 
     /// Cancel the running job (partial files are left for a later resume).
     void Stop();
@@ -76,13 +82,18 @@ public:
 
 private:
     void Run(std::string video_url, std::string audio_url,
-             std::string output_path, std::string id, RequestContext ctx);
+             std::string output_path, std::string id, RequestContext ctx,
+             std::string resume_key);
 
     /// Download one track to `path`, blocking until done. `base_bytes` is
     /// added to every progress report so the two tracks read as one job.
+    /// `resume_key` identifies THIS track (the caller's key plus a per-track
+    /// suffix), so the video track's bitmap can never be read as the audio
+    /// track's.
     bool FetchTrack(const std::string& url, const std::string& path,
                     const std::string& id, const RequestContext& ctx,
                     double base_bytes, double extra_total,
+                    const std::string& resume_key,
                     std::string* error);
 
     Downloader dl_;

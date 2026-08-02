@@ -11,6 +11,43 @@
 
 namespace odm {
 
+/// The one extension this bridge answers to.
+///
+/// Chrome derives an extension's id from the public key in its manifest, and
+/// an unpacked extension without one is identified by the PATH it was loaded
+/// from — a different id on every machine, which is why the origin check used
+/// to accept `chrome-extension://` wholesale. extension/manifest.json now
+/// carries a fixed `key`, so the id below is the same everywhere and can be
+/// named. Anything else claiming to be an extension is somebody else's.
+///
+/// Keep this in step with the `key` field: the id is the first 16 bytes of
+/// SHA-256 over the key's DER bytes, each nibble mapped 0-15 to 'a'-'p'.
+constexpr const char* kExtensionId = "pmhdndfledfenepnlhddknpkihaiiaeh";
+
+/// True when `origin` is exactly our extension's origin.
+///
+/// This is a real gate against the ordinary case — an extension that has not
+/// asked for loopback host permission is subject to CORS, so Chrome both sends
+/// the Origin header and enforces the answer. It is NOT a gate against an
+/// extension that declares `http://127.0.0.1/*` itself: Chrome exempts those
+/// from CORS and may omit Origin entirely, which is also why a request with no
+/// Origin at all is still tolerated (that is what our own extension sends).
+bool OriginIsOurExtension(const std::string& origin);
+
+/// May `name: value` be put on the wire as one request header?
+///
+/// Extra headers arrive as JSON — from the bridge's POST body, or from the
+/// request context the UI hands to StartDownload — and JSON string escapes
+/// can spell out a carriage return. libcurl does not police the header lines
+/// it is given, so a value containing CRLF does not stay a value: everything
+/// after it becomes further headers, and a body after a blank line becomes a
+/// second request, sent to the same host with the same cookies attached.
+///
+/// The rules are RFC 7230's: a name is a token, and a value carries no CR, LF
+/// or NUL. Length is capped too, so a hand-off cannot push a megabyte of
+/// header at whatever it is downloading from.
+bool HeaderPairSafe(const std::string& name, const std::string& value);
+
 /// Minimal flat-JSON parser used by both the bridge (POST bodies) and the
 /// UI bridge (context JSON from JavaScript). Supports string values only;
 /// nested objects are flattened to "key.subkey"; numbers/bools/null are
@@ -49,11 +86,12 @@ struct BridgePayload {
 ///
 /// Endpoints:
 ///   GET  /ping  -> {"app":"odm","version":"...","token":"..."}
+///                  the token is withheld from a foreign extension origin.
 ///   POST /add   -> JSON body {url, filename?, referrer?, cookies?,
 ///                             cookieJar?, userAgent?, headers?{...}}
-///                  requires X-ODM-Token; Origin (if present) must be a
-///                  chrome-extension:// origin, otherwise 403.
-///   OPTIONS *   -> CORS preflight (echoes chrome-extension:// origins only)
+///                  requires X-ODM-Token; Origin (if present) must be our own
+///                  extension's origin, otherwise 403.
+///   OPTIONS *   -> CORS preflight (echoes our extension's origin only)
 ///
 /// Every request must carry a Host naming this server's own loopback address;
 /// anything else is a DNS-rebinding attempt and gets 403 before it is routed.

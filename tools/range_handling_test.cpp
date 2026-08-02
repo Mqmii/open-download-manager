@@ -30,16 +30,22 @@ namespace {
 
 int g_failures = 0;
 
-void Check(const std::string& what, bool ok) {
-    std::printf("  [%s] %s\n", ok ? "PASS" : "FAIL", what.c_str());
+void Check(const std::string& what, bool ok, const std::string& detail = {}) {
+    std::printf("  [%s] %s%s\n", ok ? "PASS" : "FAIL", what.c_str(),
+                detail.empty() ? "" : ("  (" + detail + ")").c_str());
     if (!ok) ++g_failures;
 }
 
 enum class Manners {
     Honor,       // proper 206 + Content-Range
     Ignore,      // always 200 + the whole body, Range never honored
-    LieOnProbe   // 206 for the probe's "0-0", then 200 + whole body
+    LieOnProbe,  // 206 for the probe's "0-0", then 200 + whole body
+    Overrun      // 206, but the window is WIDER than the one asked for
 };
+
+// The byte the Overrun server pads with. The real body is `i % 251`, so 0xFF
+// never occurs in it — any 0xFF on disk is a byte that escaped its window.
+constexpr char kPoison = '\xFF';
 
 class Server {
 public:
@@ -126,11 +132,24 @@ private:
                      (manners_ == Manners::Honor ||
                       (manners_ == Manners::LieOnProbe && probe));
 
+        if (manners_ == Manners::Overrun && ranged) honor = true;
+
         std::string hdr, payload;
         if (honor) {
-            const long long last = (to < 0 || to >= total) ? total - 1 : to;
+            long long last = (to < 0 || to >= total) ? total - 1 : to;
             const long long len = last - from + 1;
             payload = body_.substr((size_t)from, (size_t)len);
+            // A server that answers 206 with MORE than was asked for. This is
+            // the case the post-transfer status check cannot see: the reply is
+            // a perfectly well-formed 206, it just covers a wider window, and
+            // every extra byte lands on top of the chunk that starts where
+            // this one ends. The padding is deliberately a byte the real body
+            // never contains, so it can be spotted on disk.
+            if (manners_ == Manners::Overrun && !probe) {
+                const long long over = 4096;
+                payload.append((size_t)over, kPoison);
+                last += over;
+            }
             hdr = "HTTP/1.1 206 Partial Content\r\n"
                   "Content-Range: bytes " + std::to_string(from) + "-" +
                   std::to_string(last) + "/" + std::to_string(total) + "\r\n"
@@ -179,6 +198,22 @@ bool FileMatches(const std::string& path, const std::string& want) {
 long long FileSize(const std::string& path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     return f ? (long long)f.tellg() : -1;
+}
+
+// How many padding bytes made it onto disk, i.e. how far past its own window
+// some connection wrote. Zero is the only acceptable answer.
+size_t PoisonBytes(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return 0;
+    size_t n = 0;
+    char buf[65536];
+    while (f) {
+        f.read(buf, sizeof(buf));
+        const std::streamsize got = f.gcount();
+        for (std::streamsize i = 0; i < got; ++i)
+            if (buf[i] == kPoison) ++n;
+    }
+    return n;
 }
 
 void Cleanup(const std::string& path) {
@@ -269,7 +304,40 @@ int main() {
         srv.Stop();
     }
 
-    // 4. Small files take the single-connection path either way.
+    // 4. A server that answers 206 with a WIDER window than requested. The
+    //    reply passes every check made after the transfer — it is a real 206
+    //    with a matching Content-Range — so the only place the overflow can
+    //    be stopped is as the bytes arrive. Left unchecked, each connection
+    //    scribbles over the start of the next chunk and the result is still
+    //    reported as finished.
+    {
+        std::printf("server honors Range but sends past the end of it\n");
+        Server srv(Manners::Overrun, kBig);
+        if (!srv.Start()) { std::printf("  [FAIL] no socket\n"); return 1; }
+        const std::string out = "rh_overrun.bin";
+        Cleanup(out);
+
+        odm::Downloader dl;
+        dl.Start(srv.Url(), out, "t5");
+        const odm::DownloadResult r = dl.WaitForCompletion();
+
+        const size_t poison = PoisonBytes(out);
+        // The invariant, whatever the outcome: no connection wrote outside
+        // the window it asked for.
+        Check("no byte was written past the range it belonged to",
+              poison == 0, std::to_string(poison) + " stray bytes");
+        // And the usual rule: a wrong file is never called finished.
+        const bool completed = (r.status == odm::DownloadStatus::Completed);
+        Check("a wrong file is never reported as Completed",
+              !completed || FileMatches(out, srv.Body()));
+        if (!completed)
+            std::printf("       refused as expected: %s\n",
+                        r.error_message.c_str());
+        Cleanup(out);
+        srv.Stop();
+    }
+
+    // 5. Small files take the single-connection path either way.
     {
         std::printf("small file, server ignores Range\n");
         Server srv(Manners::Ignore, kSmall);

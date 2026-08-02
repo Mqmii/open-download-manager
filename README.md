@@ -16,7 +16,13 @@ web page and rendered by [Ultralight](https://ultralig.ht).
   up the tail.
 - **Resume that survives a restart.** Progress is kept in a sidecar next to the
   file, so an interrupted download continues where it stopped rather than
-  starting over.
+  starting over. The sidecar is normally bound to the URL, which is what keeps
+  it from being read onto some other file's bytes. YouTube is the exception:
+  its media links are signed and expire, so the app re-resolves the watch page
+  on every launch and gets a different URL for the same video — those jobs bind
+  their sidecar to the watch page instead, and a paused video really does
+  continue. Changing the quality starts over, because the bytes on disk are a
+  different rendition.
 - **Video capture from the browser.** The extension watches page media and
   offers a download button over the video you are actually watching — plain
   files, HLS/CMAF streams, and the paired video/audio streams Instagram and
@@ -36,8 +42,19 @@ web page and rendered by [Ultralight](https://ultralig.ht).
 ## Browser integration
 
 The app runs a small HTTP bridge on `127.0.0.1:47923`, bound to loopback only
-and authenticated with a token that is regenerated on every launch. The
-extension talks to it over that bridge.
+and authenticated with a token kept in `bridge.token` next to the executable
+(generated on first run, reused afterwards — the extension re-fetches it from
+`/ping`, so restarting the app never breaks the pairing). The extension talks
+to it over that bridge.
+
+The bridge answers one extension and no other. Chrome normally derives an
+unpacked extension's id from the folder it was loaded from — a different id on
+every machine, which is why the origin check used to have to accept
+`chrome-extension://` wholesale. `extension/manifest.json` therefore carries a
+fixed `key`, which pins the id everywhere, and `kExtensionId` in
+[`src/BridgeServer.h`](src/BridgeServer.h) names it. **Do not remove the `key`,
+and change the two together** — the `extension_identity` test fails if they
+drift apart.
 
 ```
 ┌──────────────────────── Chrome ────────────────────────┐
@@ -224,7 +241,16 @@ is exposed to it as a handful of JavaScript functions.
 ## Notes
 
 The bridge listens on loopback only and rejects requests without the current
-token, so nothing outside the machine can queue a download.
+token, so nothing outside the machine can queue a download. Requests must also
+name this server in their `Host` header (a page that has rebound its own domain
+to 127.0.0.1 does not), and a browser origin must be our own extension's — any
+other extension gets neither the token nor a CORS echo. Extra request headers
+carried by a hand-off are validated before they reach the wire, so a value
+cannot end its own header line and split the request in two.
+
+One boundary this does not cross: a program already running as you can read
+`bridge.token` off the disk, and so could queue a download. Nothing here is
+meant to defend against code that is already running under your account.
 
 ## Licence
 

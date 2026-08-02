@@ -211,6 +211,52 @@ static bool ParseObjectLevel(JsonCursor& c,
 
 } // namespace
 
+bool OriginIsOurExtension(const std::string& origin) {
+    // Exact match only. A prefix test would let
+    // "chrome-extension://pmhd...aeh.evil" through, and an id is fixed-length
+    // anyway, so there is nothing to be lenient about.
+    static const std::string ours =
+        std::string("chrome-extension://") + kExtensionId;
+    return origin == ours;
+}
+
+bool HeaderPairSafe(const std::string& name, const std::string& value) {
+    // Generous, but not unbounded: real headers are short, and the only
+    // reason to send a huge one is to make somebody else's parser unhappy.
+    constexpr size_t kMaxName  = 128;
+    constexpr size_t kMaxValue = 4 * 1024;
+    if (name.empty() || name.size() > kMaxName) return false;
+    if (value.size() > kMaxValue) return false;
+
+    // RFC 7230 token: no separators, no spaces, no controls. This rejects the
+    // colon too, so a name cannot smuggle a second field in by itself.
+    for (const unsigned char c : name) {
+        const bool token =
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+            c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+            c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
+        if (!token) return false;
+    }
+
+    // Values may hold anything printable (and a tab), but no line structure:
+    // CR or LF ends the field, and a NUL truncates it for whoever reads it as
+    // a C string on the way out.
+    for (const unsigned char c : value) {
+        if (c == '\r' || c == '\n' || c == '\0') return false;
+        if (c < 0x20 && c != '\t') return false;
+    }
+
+    // A value that begins with whitespace is an obs-fold continuation of the
+    // header before it rather than a value of its own; curl would send it,
+    // and what the far end makes of it is anyone's guess.
+    if (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+        return false;
+
+    return true;
+}
+
 bool ParseSimpleJson(const std::string& json,
                      std::map<std::string, std::string>& out) {
     JsonCursor c{json.data(), json.data() + json.size()};
@@ -535,13 +581,14 @@ void BridgeServer::HandleClient(uintptr_t client) {
         }
     }
 
-    // CORS: only browser-extension origins get echoed (web pages get nothing,
-    // which makes the browser block them from reading our responses).
+    // CORS: only OUR extension's origin gets echoed. Web pages get nothing,
+    // which makes the browser block them from reading our responses — and so
+    // does any other extension, which used to be waved through because every
+    // `chrome-extension://` origin looked alike before the id was pinned.
     std::string origin;
     auto oit = req.headers.find("origin");
     if (oit != req.headers.end()) origin = oit->second;
-    const bool ext_origin =
-        origin.rfind("chrome-extension://", 0) == 0;
+    const bool ext_origin = OriginIsOurExtension(origin);
     const std::string allow_origin = ext_origin ? origin : std::string();
 
     // --- CORS preflight ----------------------------------------------------
@@ -557,18 +604,26 @@ void BridgeServer::HandleClient(uintptr_t client) {
     }
 
     // --- GET /ping ---------------------------------------------------------
+    // Doubles as the handshake and as "is ODM running?". That ODM is running
+    // is not a secret; the token is, so it only rides along for a caller that
+    // is either our own extension or presents no Origin at all (a local
+    // process, which can read bridge.token off the disk regardless). A
+    // DIFFERENT extension gets the version and nothing else.
     if (req.method == "GET" && (req.path == "/ping" || req.path == "/")) {
-        std::string body =
-            "{\"app\":\"odm\",\"version\":\"" ODM_VERSION "\",\"token\":\"" +
-            token_ + "\"}";
+        std::string body = "{\"app\":\"odm\",\"version\":\"" ODM_VERSION "\"";
+        if (origin.empty() || ext_origin)
+            body += ",\"token\":\"" + token_ + "\"";
+        body += "}";
         Respond(s, 200, "OK", body, allow_origin);
         return;
     }
 
     // --- POST /add ---------------------------------------------------------
     if (req.method == "POST" && req.path == "/add") {
-        // Defense in depth: an Origin header that ISN'T a browser extension
-        // means a web page (or rebinding attack) — refuse outright.
+        // Defense in depth: an Origin header that isn't ours means a web page,
+        // a rebinding attack, or another extension — refuse outright. Absent
+        // is still allowed: Chrome omits Origin for a caller that holds
+        // loopback host permission, which our own extension does.
         if (!origin.empty() && !ext_origin) {
             Respond(s, 403, "Forbidden", "{\"ok\":false,\"error\":\"bad origin\"}");
             return;
@@ -594,9 +649,14 @@ void BridgeServer::HandleClient(uintptr_t client) {
         p.audio_url  = m["audioUrl"];
         p.type       = m["type"];
         p.height     = m["height"];
+        // Dropped, not rejected: a caller sending one unusable header should
+        // still get its download. What must not happen is the pair reaching
+        // the wire, where a CR in the value would split the request.
         for (const auto& kv : m) {
-            if (kv.first.rfind("headers.", 0) == 0)
-                p.headers.emplace_back(kv.first.substr(8), kv.second);
+            if (kv.first.rfind("headers.", 0) != 0) continue;
+            const std::string hname = kv.first.substr(8);
+            if (HeaderPairSafe(hname, kv.second))
+                p.headers.emplace_back(hname, kv.second);
         }
         // Only real downloads: plain http(s) URLs.
         if (p.url.rfind("http://", 0) != 0 && p.url.rfind("https://", 0) != 0) {
@@ -615,6 +675,7 @@ void BridgeServer::HandleClient(uintptr_t client) {
     // handles one connection at a time — so the extension caches the answer
     // per video and asks once, not on every hover.
     if (req.method == "POST" && req.path == "/ytformats") {
+        // Same origin rule as /add.
         if (!origin.empty() && !ext_origin) {
             Respond(s, 403, "Forbidden", "{\"ok\":false,\"error\":\"bad origin\"}");
             return;

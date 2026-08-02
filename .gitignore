@@ -29,6 +29,8 @@ downloads/
 # video/audio track temps awaiting the mux
 *.vtrk
 *.atrk
+# which format the yt-dlp fallback fetched its partial with
+*.ytdlp
 # regenerated per run, still a local secret
 bridge.token
 # only written when ODM_CONSOLE_LOG=1

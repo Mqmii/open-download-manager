@@ -75,6 +75,17 @@ struct DownloadResult {
     double         downloaded_bytes = 0;
 };
 
+/// Settle the outcome of a job that did not run to completion.
+///
+/// Every engine reaches its exit path with `status` still at its Failed
+/// default and some error text in hand, and a cancelled job arrives there the
+/// same way an outright failure does. The two must NOT be reported alike: the
+/// UI auto-retries a failure, so a Stop that came back as one restarted the
+/// download the user had just cancelled a few seconds later. A job that
+/// already completed is left alone — a Stop that lost the race did not undo
+/// the download.
+void FinalizeCancelled(DownloadResult& res, bool cancelled);
+
 ///
 /// Multi-segment HTTP/HTTPS downloader built on libcurl.
 ///
@@ -136,9 +147,20 @@ public:
     /// caller token echoed back in progress/completion callbacks.
     /// `ctx` is one-shot: it applies only to this run and is replaced on the
     /// next Start (an empty context means a plain, header-less request).
+    ///
+    /// `resume_key` is what the resume sidecar is bound to, and it defaults to
+    /// the URL — which is the right answer whenever the URL is stable. It is
+    /// not always stable: a YouTube media link is signed and time-limited, so
+    /// re-resolving the same video yields a different URL every time, the
+    /// sidecar written by the previous run never matches, and what the user
+    /// pressed Resume on silently restarts from zero. Callers that know a
+    /// steadier identity for the job (the watch page, say) pass it here. The
+    /// size and chunk-geometry checks are unaffected, so a key that collides
+    /// still cannot resume onto the wrong bytes.
     void Start(const std::string& url, const std::string& output_path,
                const std::string& id = std::string(),
-               const RequestContext& ctx = RequestContext{});
+               const RequestContext& ctx = RequestContext{},
+               const std::string& resume_key = std::string());
 
     /// Request a graceful cancellation. Segment threads will finish their
     /// current write and the partial file is kept on disk for resume.
@@ -308,6 +330,13 @@ private:
     std::unique_ptr<WorkerState[]> worker_states_;
     // From the probe; surfaced to the UI as "Resume Support".
     bool              supports_range_ = false;
+
+    // What the sidecar is bound to. Empty means "use url_" — see Start().
+    std::string       resume_key_;
+    // The identity actually hashed into the sidecar for this run.
+    const std::string& ResumeIdentity() const {
+        return resume_key_.empty() ? url_ : resume_key_;
+    }
 
     std::vector<Part> parts_;
     std::string       url_;

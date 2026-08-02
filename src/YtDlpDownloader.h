@@ -54,14 +54,33 @@ public:
                const std::string& output_path,
                const std::string& id);
 
-    /// Cancel the running job: the yt-dlp process is terminated and its
-    /// partial track files are removed (they cannot be resumed by us).
+    /// Cancel the running job: the yt-dlp process is terminated. The partial
+    /// tracks are LEFT on disk together with the plan file describing them, so
+    /// the next launch continues instead of starting the video over.
     void Stop();
 
     bool IsRunning() const { return running_.load(); }
 
     /// Block until the worker thread has finished (used on shutdown).
     void WaitForCompletion();
+
+    // --- Resume bookkeeping (public so it can be tested on its own) --------
+    //
+    // yt-dlp APPENDS to an existing file with --continue, so continuing a
+    // partial that was fetched under a DIFFERENT format selection would
+    // splice two renditions into one broken file. The plan is the short
+    // description of "what this partial is", written beside the output and
+    // compared before anything is reused.
+
+    /// Where the plan for `output_path` lives.
+    static std::string PlanPath(const std::string& output_path);
+    /// The plan a run capped at `max_height` would produce.
+    static std::string PlanFor(int max_height);
+    /// The plan recorded at `path`; "" when there is none — which matches no
+    /// plan, so a fresh download never mistakes a stranger's partial for its
+    /// own.
+    static std::string ReadPlan(const std::string& path);
+    static void        WritePlan(const std::string& path, const std::string& plan);
 
 private:
     void Run(std::string page_url, std::string output_path, std::string id);

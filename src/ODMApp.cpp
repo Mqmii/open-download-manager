@@ -1255,10 +1255,15 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
             job_type = m["type"];
             audio_url = m["audioUrl"];   // paired DASH: the audio rung
             if (!m["height"].empty()) max_height = std::atoi(m["height"].c_str());
+            // The last gate before curl. The bridge already filters what it
+            // accepts, but a context can also come straight from the page
+            // (localStorage, the Add-Download modal), and this is the only
+            // place both routes pass through.
             for (const auto& kv : m) {
-                if (kv.first.rfind("headers.", 0) == 0)
-                    req_ctx.extra_headers.push_back(
-                        kv.first.substr(8) + ": " + kv.second);
+                if (kv.first.rfind("headers.", 0) != 0) continue;
+                const std::string hname = kv.first.substr(8);
+                if (HeaderPairSafe(hname, kv.second))
+                    req_ctx.extra_headers.push_back(hname + ": " + kv.second);
             }
             // Only when the browser actually suggested one: SanitizeForPath
             // answers "download.bin" for an empty string, which would turn
@@ -1287,7 +1292,7 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
 void ODMApp::BeginDownload(std::string url, std::string out_path,
                            std::string id, RequestContext req_ctx,
                            std::string suggested_name, std::string job_type,
-                           std::string audio_url) {
+                           std::string audio_url, std::string resume_key) {
     // Derive a safe filename from the URL (used when the caller gave no path,
     // or only a directory). A browser-suggested filename wins when present.
     auto name_from_url = [&url]() -> std::string {
@@ -1357,12 +1362,12 @@ void ODMApp::BeginDownload(std::string url, std::string out_path,
     } else if (job_type == "dash") {
         // `url` is the chosen video rung, `audio_url` its audio track; the
         // engine downloads both and remuxes them into one file.
-        dash_.Start(url, audio_url, out_path, id, req_ctx);
+        dash_.Start(url, audio_url, out_path, id, req_ctx, resume_key);
     } else if (job_type == "ytdlp-direct") {
         // No plain media URL exists for this video — yt-dlp fetches it itself.
         ytdlp_.Start(url, out_path, id);
     } else {
-        downloader_.Start(url, out_path, id, req_ctx);
+        downloader_.Start(url, out_path, id, req_ctx, resume_key);
     }
 }
 
@@ -1453,9 +1458,13 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
             // multi-segment engine and muxed by us — same as any DASH job.
             RequestContext ctx;
             ctx.referrer = "https://www.youtube.com/";
+            // The watch page is the resume key: the rung URLs below are
+            // signed and expire, so a later Resume re-resolves this same
+            // video into DIFFERENT urls. Hashing those would reject the
+            // sidecar every time and restart a paused video from zero.
             BeginDownload(info.video_url, out_path, id, ctx, name,
                           info.audio_url.empty() ? "" : "dash",
-                          info.audio_url);
+                          info.audio_url, page_url);
         });
     }).detach();
 }
@@ -1852,7 +1861,8 @@ const char* const kPartialSuffixes[] = {
     ".atrk.hlsmeta",  // and the same four for the audio track
     ".atrk.hlsparts",
     ".atrk.odmprog",
-    ".atrk.id"
+    ".atrk.id",
+    ".ytdlp"          // yt-dlp fallback: which format its partial was fetched with
 };
 
 } // namespace
