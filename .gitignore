@@ -42,6 +42,8 @@ odm-console.log
 # Local working notes (never published)
 .workbuddy-ai/
 BUG_REPORT.md
+# Briefing for AI agents working on this repo -- local, not shipped
+CLAUDE.md
 
 # CLion writes its own .gitignore inside these, but do not depend on it
 cmake-build-*/
