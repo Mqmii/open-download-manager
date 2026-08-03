@@ -112,6 +112,46 @@ bool StartsWith(const std::string& s, const char* p) {
     return s.rfind(p, 0) == 0;
 }
 
+// Lowercased host of a URL, with any "www."/"m." prefix, credentials, port
+// and path stripped — the same normalization IsSupportedUrl does inline.
+std::string LowerHostOf(const std::string& url) {
+    std::string u = url;
+    std::transform(u.begin(), u.end(), u.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    const size_t p = u.find("://");
+    if (p == std::string::npos) return std::string();
+    std::string host = u.substr(p + 3);
+    host = host.substr(0, host.find_first_of("/?#"));
+    const size_t at = host.rfind('@');
+    if (at != std::string::npos) host = host.substr(at + 1);
+    host = host.substr(0, host.find(':'));
+    if (StartsWith(host, "www.")) host = host.substr(4);
+    if (StartsWith(host, "m."))   host = host.substr(2);
+    return host;
+}
+
+// The '/'-separated segments of a URL path, empty ones skipped.
+std::vector<std::string> PathSegments(const std::string& path) {
+    std::vector<std::string> segs;
+    size_t at = 0;
+    while (at < path.size()) {
+        const size_t next = path.find('/', at);
+        const std::string seg = path.substr(
+            at, (next == std::string::npos ? path.size() : next) - at);
+        if (!seg.empty()) segs.push_back(seg);
+        if (next == std::string::npos) break;
+        at = next + 1;
+    }
+    return segs;
+}
+
+// A Vimeo video id: a run of digits, six or more. Ancient uploads have
+// shorter ids, but confusing a feed page for a video is the worse failure.
+bool LooksLikeVimeoId(const std::string& seg) {
+    return seg.size() >= 6 && std::all_of(seg.begin(), seg.end(),
+        [](unsigned char c) { return std::isdigit(c); });
+}
+
 } // namespace
 
 // --- executable lookup ------------------------------------------------------
@@ -155,7 +195,8 @@ bool IsSupportedUrl(const std::string& url) {
     if (StartsWith(host, "www.")) host = host.substr(4);
     if (StartsWith(host, "m."))   host = host.substr(2);
     return host == "youtube.com" || host == "youtu.be" ||
-           host == "music.youtube.com" || host == "youtube-nocookie.com";
+           host == "music.youtube.com" || host == "youtube-nocookie.com" ||
+           host == "vimeo.com" || host == "player.vimeo.com";
 }
 
 bool HasVideoId(const std::string& url) {
@@ -188,6 +229,16 @@ bool HasVideoId(const std::string& url) {
     if (host.find("youtu.be") != std::string::npos)
         return looks_like_id(path.size() > 1 ? path.substr(1) : "");
 
+    // Vimeo: the numeric id is a path segment on every shape — /<id>,
+    // /channels/x/<id>, /album/x/video/<id>, player.vimeo.com/video/<id>.
+    // (Substring host match is safe here: IsSupportedUrl has already limited
+    // the hosts to vimeo.com and player.vimeo.com plus their prefixes.)
+    if (host.find("vimeo.com") != std::string::npos) {
+        for (const std::string& seg : PathSegments(path))
+            if (LooksLikeVimeoId(seg)) return true;
+        return false;
+    }
+
     if (path == "/watch") {
         // v=<id> anywhere in the query string.
         size_t at = 0;
@@ -210,6 +261,45 @@ bool HasVideoId(const std::string& url) {
         }
     }
     return false;
+}
+
+std::string NormalizePageUrl(const std::string& page_url) {
+    const std::string host = LowerHostOf(page_url);
+    if (host != "vimeo.com" && host != "player.vimeo.com") return page_url;
+
+    // Carve out the path; query and fragment are dropped either way.
+    const size_t p = page_url.find("://");
+    if (p == std::string::npos) return page_url;
+    const size_t slash = page_url.find('/', p + 3);
+    std::string path = slash == std::string::npos ? "" : page_url.substr(slash);
+    const size_t q = path.find_first_of("?#");
+    if (q != std::string::npos) path = path.substr(0, q);
+    const std::vector<std::string> segs = PathSegments(path);
+
+    // "/video/<id>" (embeds, albums, showcases) names the id directly; on
+    // watch pages it is the numeric segment ("/33698814",
+    // "/channels/staffpicks/33698814"). A non-numeric segment following the
+    // id on a plain watch page is the unlisted hash, which the player takes
+    // as ?h=.
+    std::string id;
+    for (size_t i = 0; i + 1 < segs.size(); ++i) {
+        if ((segs[i] == "video" || segs[i] == "videos") &&
+            LooksLikeVimeoId(segs[i + 1])) {
+            id = segs[i + 1];
+            break;
+        }
+    }
+    if (id.empty()) {
+        for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
+            if (LooksLikeVimeoId(*it)) { id = *it; break; }
+        }
+    }
+    if (id.empty()) return page_url;   // a Vimeo page, but not one video's
+
+    std::string out = "https://player.vimeo.com/video/" + id;
+    if (segs.size() == 2 && segs[0] == id && !LooksLikeVimeoId(segs[1]))
+        out += "?h=" + segs[1];
+    return out;
 }
 
 // --- process runner ---------------------------------------------------------
@@ -310,11 +400,14 @@ bool Resolve(const std::string& page_url, MediaInfo* out, int max_height,
         out->error = "yt-dlp.exe is missing from the ODM folder.";
         return false;
     }
+    // Vimeo only: the watch page goes through an OAuth client Vimeo revoked,
+    // its player embed page carries the same config with no token at all.
+    const std::string url = NormalizePageUrl(page_url);
     // Refuse a feed/channel/home URL before it reaches yt-dlp: pointed at
     // those it happily starts extracting something, and "something" is not
     // what the user clicked download on.
-    if (!HasVideoId(page_url)) {
-        out->error = "This link does not point to a single YouTube video.";
+    if (!HasVideoId(url)) {
+        out->error = "This link does not point to a single video.";
         return false;
     }
 
@@ -328,7 +421,7 @@ bool Resolve(const std::string& page_url, MediaInfo* out, int max_height,
         "-f", BuildFormat(max_height),
         "--print", "ODMINFO\x1f%(ext)s\x1f%(filesize_approx)s\x1f%(title)s",
         "--print", "%(urls)s",
-        page_url
+        url
     };
 
     std::vector<std::string> urls;
@@ -379,7 +472,8 @@ bool Resolve(const std::string& page_url, MediaInfo* out, int max_height,
 bool ListHeights(const std::string& page_url, std::vector<int>* out) {
     if (!out) return false;
     out->clear();
-    if (ExecutablePath().empty() || !HasVideoId(page_url)) return false;
+    const std::string url = NormalizePageUrl(page_url);
+    if (ExecutablePath().empty() || !HasVideoId(url)) return false;
 
     // One JSON object per format, holding only the three fields that decide
     // whether a rung belongs in the menu. Asking for the fields this way (and
@@ -389,7 +483,7 @@ bool ListHeights(const std::string& page_url, std::vector<int>* out) {
         "--no-warnings", "--no-playlist", "--no-progress", "--encoding", "utf-8",
         "--socket-timeout", "20",
         "--print", "%(formats.:.{height,vcodec,protocol})j",
-        page_url
+        url
     };
 
     std::string json;

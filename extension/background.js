@@ -420,6 +420,22 @@ function fbDashInfo(url) {
   }
 }
 
+// True for the vimeocdn URLs of Vimeo's adaptive pipeline: the proprietary
+// playlist.json manifest the MSE player drives (/v2/playlist/), its CMAF
+// segments (/v2/remux/) and the older skyfire .mpd. None of them names a
+// file ODM could fetch — the page is handed to yt-dlp instead — so this only
+// ever marks THAT this tab is playing Vimeo. Progressive .mp4 and .m3u8 on
+// the same CDN deliberately do NOT match: our own engines download those
+// directly, which beats a yt-dlp detour.
+function isVimeoStreamUrl(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  if (!/(^|\.)vimeocdn\.com$/i.test(u.hostname)) return false;
+  const p = u.pathname;
+  return p.includes('/v2/playlist/') || p.includes('/v2/remux/') ||
+         p.endsWith('.mpd');
+}
+
 // Returns {kind, ext} for a media response, or null when not list-worthy.
 function classifyMedia(url, mime) {
   mime = (mime || '').toLowerCase();
@@ -433,6 +449,10 @@ function classifyMedia(url, mime) {
 
   if (ext === 'm3u8' || mime.includes('mpegurl'))
     return { kind: 'hls', ext: ext || 'm3u8' };
+  // Checked before the generic .mpd rule: a Vimeo manifest is nothing the
+  // app can fetch, and 'dash' used to park it on "coming soon" forever.
+  if (isVimeoStreamUrl(url))
+    return { kind: 'vimeo', ext: 'mp4' };
   if (ext === 'mpd' || mime.includes('dash+xml'))
     return { kind: 'dash', ext: ext || 'mpd' };
   if (fbDashInfo(url)) return { kind: 'dash', ext: 'mp4' };
@@ -466,6 +486,14 @@ function mediaKey(url, kind) {
       if (id) return 'yt:' + id;
     } catch (e) { /* fall through */ }
   }
+  if (kind === 'vimeo') {
+    // One entry per CLIP: the clip GUID sits in the path of every manifest
+    // and segment the player fetches, so the pre-roll burst folds into a
+    // single entry. (The old skyfire CDN has no GUID in its paths — there the
+    // entry collapses per tab, and vimeo.com pages play one clip at a time.)
+    const m = url.match(/\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\//i);
+    return 'vimeo:' + (m ? m[1].toLowerCase() : 'stream');
+  }
   return url;
 }
 
@@ -476,10 +504,11 @@ function addMedia(tabId, item) {
     mediaCache.set(tabId, m);
   }
   const key = mediaKey(item.url, item.kind);
-  if (item.kind === 'youtube') {
-    // A googlevideo URL is signed, throttled and short-lived; the app never
-    // uses it. The entry exists only to say "this tab is playing a YouTube
-    // video" — the page URL is what gets handed over.
+  if (item.kind === 'youtube' || item.kind === 'vimeo') {
+    // What the sniffer saw for these is signed, throttled and short-lived (a
+    // googlevideo rung, a vimeocdn playlist); the app never uses it. The
+    // entry exists only to say "this tab is playing that site's video" — the
+    // page URL is what gets handed over.
     item.size = 0;
     item.url = key;
   }
@@ -796,8 +825,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.t === 'ODM_YT_FORMATS') {
+    // The quality menu for the yt-dlp-routed sites (YouTube, Vimeo): the app
+    // lists what the page really offers, so the menu never invents a rung.
     const page = [String(msg.pageUrl || ''), sender.url,
-                  sender.tab && sender.tab.url].find(isYouTubeVideoUrl);
+                  sender.tab && sender.tab.url]
+      .find(u => isYouTubeVideoUrl(u) || isVimeoVideoUrl(u));
     if (!page) { sendResponse({ heights: [] }); return undefined; }
     ytHeights(page).then(heights => sendResponse({ heights }));
     return true;   // async sendResponse
@@ -828,24 +860,45 @@ function isYouTubeVideoUrl(url) {
   return !!m && id.test(m[2]);
 }
 
+// The Vimeo twin of the check above, with the same stakes: the panel hands
+// over the page the video plays on and the app resolves it with yt-dlp, so
+// this is the gate between "this tab really shows one Vimeo video" and a
+// dead hand-off. Accepts the watch page (vimeo.com/<id>, also under
+// /channels/... or with an unlisted hash) and the embed player
+// (player.vimeo.com/video/<id>). The id is the only all-digits path segment
+// those pages have; vimeo.com/ itself must not pass, because a hand-off of
+// the home feed downloads nothing.
+function isVimeoVideoUrl(url) {
+  if (!/^https?:\/\//i.test(url || '')) return false;
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  if (host === 'player.vimeo.com') return /^\/video\/\d{6,}(?:\/|$)/.test(u.pathname);
+  if (host !== 'vimeo.com') return false;
+  return /(?:^|\/)\d{6,}(?:\/|$)/.test(u.pathname);
+}
+
 async function handleMediaDownload(msg, sender) {
   let url = String(msg.url || '');
   const pageUrl = sender.url || (sender.tab && sender.tab.url) || '';
   const kind = String(msg.kind || '');
 
-  // YouTube hands over the PAGE, not the media URL. The googlevideo link the
-  // sniffer saw is signed, rate-limited and expires within hours; the app
-  // re-resolves the watch page with yt-dlp instead, which is also the only
-  // way to get the audio track that goes with it.
-  if (kind === 'youtube') {
+  // YouTube and Vimeo hand over the PAGE, not the media URL. What the
+  // sniffer saw for them is signed and expires (a googlevideo rung, a
+  // vimeocdn playlist); the app re-resolves the watch page with yt-dlp
+  // instead, which is also the only way to get the audio track that goes
+  // with it.
+  if (kind === 'youtube' || kind === 'vimeo') {
+    const isPage = kind === 'youtube' ? isYouTubeVideoUrl : isVimeoVideoUrl;
+    const site = kind === 'youtube' ? 'YouTube' : 'Vimeo';
     // Take the first candidate that actually names a video. The content
     // script's location.href is read at click time and is therefore the only
     // one that survives SPA navigation; the other two are fallbacks for a
     // panel that was driven from somewhere else.
     const page = [String(msg.pageUrl || ''), sender.url,
-                  sender.tab && sender.tab.url].find(isYouTubeVideoUrl);
+                  sender.tab && sender.tab.url].find(isPage);
     if (!page) {
-      notify('ODM', 'Could not tell which YouTube video this is. ' +
+      notify('ODM', 'Could not tell which ' + site + ' video this is. ' +
                     'Reload the page and try again.');
       return false;
     }

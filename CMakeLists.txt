@@ -137,6 +137,27 @@ if(ODM_BUILD_TESTS)
     # Asserts the extension id the bridge trusts is the one Chrome derives
     # from the manifest key. Reads both files; no network access.
     odm_add_js_test(extension_identity tools/extension_identity_test.js)
+
+    # Asserts a Vimeo stream is recognized by the sniffer and handed to the
+    # app as a yt-dlp page resolve. Vimeo's manifest is a playlist.json on
+    # vimeocdn — none of the shapes the sniffer knew — so the panel sat on
+    # "Searching for stream..." forever. Runs under Node; no network access.
+    odm_add_js_test(vimeo_handoff tools/vimeo_handoff_test.js)
+
+    # Asserts every curl handle carries the revocation-soft-fail TLS policy:
+    # Schannel's default hard-fail killed downloads (MediaFire's CDN) whose
+    # revocation endpoint is unreachable, while the browser soft-fails and
+    # gets through. Runs under Node; no network access.
+    odm_add_js_test(tls_policy tools/tls_policy_test.js)
+
+    # Asserts the yt-dlp route recognizes the Vimeo URL shapes and rewrites
+    # them to the player form before yt-dlp sees them (the API form dies on a
+    # revoked OAuth token). Pure URL logic; no network access.
+    add_executable(ytdlp_url_test
+        tools/ytdlp_url_test.cpp
+        src/YtDlp.cpp)
+    target_include_directories(ytdlp_url_test PRIVATE src)
+    add_test(NAME ytdlp_url COMMAND ytdlp_url_test)
     # Asserts that hand-off cookies stay on the site they were captured on
     # when a download is redirected. Talks to two throwaway HTTP servers it
     # starts on loopback; no network access.

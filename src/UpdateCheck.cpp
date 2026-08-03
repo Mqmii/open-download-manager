@@ -1,6 +1,7 @@
 #include "UpdateCheck.h"
 
 #include "BridgeServer.h"   // ParseSimpleJson
+#include "Downloader.h"     // ApplyTlsPolicy
 
 #include <curl/curl.h>
 
@@ -137,6 +138,7 @@ void CheckAsync(std::function<void(const std::string&)> on_newer) {
 
         CURL* curl = curl_easy_init();
         if (!curl) return;
+        ApplyTlsPolicy(curl);
         std::string body;
         curl_easy_setopt(curl, CURLOPT_URL, kApiUrl);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

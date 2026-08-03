@@ -520,6 +520,7 @@ bool Downloader::Probe(const std::string& url,
                        bool&     out_supports_range) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
+    ApplyTlsPolicy(curl);
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -1237,6 +1238,7 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
 
         CURL* curl = curl_easy_init();
         if (!curl) { if (err) *err = "curl_easy_init failed"; return 0; }
+        ApplyTlsPolicy(curl);
         CurlGuard guard{curl};   // cleans up on every exit path
 
         uint64_t seg_start = off + done.load();   // resume from what we have
@@ -1360,6 +1362,7 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
                          CURL_ERROR_SIZE - 1);
             break;
         }
+        ApplyTlsPolicy(curl);
         CurlGuard guard{curl};
         part.easy = curl;
 

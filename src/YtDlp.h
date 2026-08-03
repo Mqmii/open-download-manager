@@ -32,13 +32,27 @@ std::string ExecutablePath();
 
 inline bool Available() { return !ExecutablePath().empty(); }
 
-/// True for the page URLs this path handles (youtube.com / youtu.be).
+/// True for the page URLs this path handles (youtube.com / youtu.be /
+/// vimeo.com / player.vimeo.com).
 bool IsSupportedUrl(const std::string& url);
 
 /// True when the URL names ONE video (/watch?v=, /shorts/, /embed/, /live/,
-/// youtu.be/ID). A bare "https://www.youtube.com/" passes IsSupportedUrl but
-/// points at the home feed, and must never reach the extractor.
+/// youtu.be/ID, vimeo.com/<id> in any of its shapes, player.vimeo.com/
+/// video/<id>). A bare "https://www.youtube.com/" or "https://vimeo.com/"
+/// passes IsSupportedUrl but points at the home feed, and must never reach
+/// the extractor.
 bool HasVideoId(const std::string& url);
+
+/// Rewrite a page URL into the form yt-dlp can actually extract. Everything
+/// but Vimeo already has that form and is returned unchanged.
+///
+/// yt-dlp resolves a vimeo.com watch page through Vimeo's API, which
+/// authenticates with an OAuth client token Vimeo has since revoked — the
+/// resolve dies with a 401 before a single format is known. The player embed
+/// page carries the same stream config with no token at all, so watch URLs
+/// are rewritten to https://player.vimeo.com/video/<id> (an unlisted hash
+/// rides along as ?h=) before yt-dlp ever sees them.
+std::string NormalizePageUrl(const std::string& page_url);
 
 /// What a page URL resolves to.
 struct MediaInfo {

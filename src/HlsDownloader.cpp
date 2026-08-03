@@ -239,6 +239,7 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
                                   const char* range) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
+    ApplyTlsPolicy(curl);
     FetchBuf fb{ &out, worker_index >= 0 ? inflight_[worker_index].get() : nullptr };
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     if (range) curl_easy_setopt(curl, CURLOPT_RANGE, range);
@@ -313,6 +314,7 @@ bool HlsDownloader::LoadPlaylist(const std::string& url, std::string& out_body,
     long code = 0;
     CURL* curl = curl_easy_init();
     if (!curl) return false;
+    ApplyTlsPolicy(curl);
     FetchBuf fb{ &buf, nullptr };
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, FetchWrite);

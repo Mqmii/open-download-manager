@@ -1387,21 +1387,27 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
 
     PostJS("UI.onStatus('Reading the video page...');");
 
+    // A Vimeo watch page reaches yt-dlp only through its player URL (the API
+    // path yt-dlp would take for it authenticates with a revoked OAuth client
+    // and dies with a 401). Normalize once here, so the resolve below, the
+    // ytdlp-direct fallback and the resume key all agree on the one form.
+    const std::string page = ytdlp::NormalizePageUrl(page_url);
+
     // Resolving spawns yt-dlp and can take seconds; the mailbox (not `this`)
     // is what the worker carries, so closing the window mid-resolve simply
     // drops the result. The cancel flag travels the same way, so Stop can
     // reach into those seconds and yt-dlp dies with them.
     resolve_cancel_ = std::make_shared<std::atomic<bool>>(false);
-    std::thread([this, mail = mail_, cancel = resolve_cancel_, page_url,
+    std::thread([this, mail = mail_, cancel = resolve_cancel_, page,
                  out_path, id, suggested_name, max_height] {
         ytdlp::MediaInfo info;
-        const bool ok = ytdlp::Resolve(page_url, &info, max_height, cancel.get());
+        const bool ok = ytdlp::Resolve(page, &info, max_height, cancel.get());
 
         // Everything below touches the engines and the UI, both of which are
         // main-thread only. `this` is safe to capture here because the task
         // only ever runs from OnUpdate, and a closed mailbox never hands it
         // out at all.
-        mail->PostTask([this, cancel, page_url, out_path, id, suggested_name,
+        mail->PostTask([this, cancel, page, out_path, id, suggested_name,
                         info, ok, max_height] {
             // This resolve is over either way; let Stop go back to reporting
             // that there is nothing to stop.
@@ -1439,7 +1445,7 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
                 js << "if (window.UI && UI.onComplete) UI.onComplete('"
                    << EscapeJS(id) << "', 'error', '', '"
                    << EscapeJS(info.error.empty()
-                                   ? "Could not read this YouTube video."
+                                   ? "Could not read this video."
                                    : info.error) << "');";
                 PostJS(js.str());
                 return;
@@ -1450,21 +1456,29 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
                 // rides on the engine because BeginDownload routes by type
                 // alone and knows nothing about YouTube.
                 ytdlp_.SetMaxHeight(max_height);
-                BeginDownload(page_url, out_path, id, RequestContext{}, name,
+                BeginDownload(page, out_path, id, RequestContext{}, name,
                               "ytdlp-direct", "");
                 return;
             }
             // The normal case: two ordinary https tracks, downloaded by the
             // multi-segment engine and muxed by us — same as any DASH job.
             RequestContext ctx;
-            ctx.referrer = "https://www.youtube.com/";
+            // A plausible Referer for the CDN the tracks come from: the
+            // site's own origin. (Hardcoding YouTube's here dressed every
+            // Vimeo track request in the wrong site's clothes.)
+            {
+                const size_t scheme = page.find("://");
+                const size_t slash = scheme == std::string::npos
+                    ? std::string::npos : page.find('/', scheme + 3);
+                ctx.referrer = page.substr(0, slash) + "/";
+            }
             // The watch page is the resume key: the rung URLs below are
             // signed and expire, so a later Resume re-resolves this same
             // video into DIFFERENT urls. Hashing those would reject the
             // sidecar every time and restart a paused video from zero.
             BeginDownload(info.video_url, out_path, id, ctx, name,
                           info.audio_url.empty() ? "" : "dash",
-                          info.audio_url, page_url);
+                          info.audio_url, page);
         });
     }).detach();
 }
@@ -2044,6 +2058,7 @@ ProbeInfo ProbeAttempt(const std::string& url, bool head,
     ProbeInfo pi;
     CURL* curl = curl_easy_init();
     if (!curl) return pi;
+    ApplyTlsPolicy(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);

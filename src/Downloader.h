@@ -44,6 +44,28 @@ struct RequestContext {
     std::vector<std::string> extra_headers; // full "Name: value" lines
 };
 
+/// Browser-grade TLS policy for every curl handle this app creates.
+///
+/// Windows Schannel, at libcurl's defaults, checks certificate revocation
+/// and fails CLOSED: when the CRL/OCSP endpoint is unreachable — blocked by
+/// the ISP, a DNS filter or an intercepting proxy — every handshake to the
+/// site dies (observed: MediaFire's CDN, whose crls.ssl.com answers 403
+/// through the user's middlebox, so each download ended in "Failed to probe
+/// the URL ... HTTPS cert" while Chrome downloaded happily). The softer
+/// REVOKE_BEST_EFFORT was tried first and does NOT cure it: the chain comes
+/// back marked IS_REVOKED, not merely STATUS_UNKNOWN/OFFLINE, and best-effort
+/// only forgives the latter two. So revocation checking is turned OFF here —
+/// which is also what libcurl does by default on every other TLS backend
+/// (OpenSSL, GnuTLS, rustls check nothing unless asked) and how browsers
+/// treat an unverifiable revocation status. Root-trust, expiry and hostname
+/// verification all stay on; only the "revoked by the CA after issuance"
+/// lookup is skipped. No-op on non-Schannel backends. Inline so the test
+/// executables pick it up without linking the whole engine.
+inline void ApplyTlsPolicy(CURL* curl) {
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS,
+                     static_cast<long>(CURLSSLOPT_NO_REVOKE));
+}
+
 /// Install a hand-off context on a curl handle for a request to `url`.
 ///
 /// Cookies go through curl's cookie engine, never CURLOPT_COOKIE. That option
