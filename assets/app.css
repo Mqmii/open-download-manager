@@ -598,11 +598,15 @@ body.hide-disk .disk-widget {
 
 /* Main Table Section */
 .table-container {
+  --table-pad: 16px;
   flex: 1;
   background-color: var(--bg-panel);
   border: 1px solid var(--border-color);
   border-radius: 16px;
-  padding: 16px;
+  /* No top padding: sticky thead must sit at top:0 of the scrollport.
+     A top pad leaves a gap rows scroll through (box-shadow cannot mask it
+     reliably in the embedded webview). Side/bottom pad stays. */
+  padding: 0 var(--table-pad) var(--table-pad);
   overflow-y: auto;
   position: relative;
   min-height: 0;
@@ -618,12 +622,17 @@ body.hide-disk .disk-widget {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
-  padding: 12px 16px;
+  /* Top pad lives on the sticky cells so the inset survives scrolling
+     without opening a gap above the header for rows to peek through. */
+  padding: var(--table-pad) 16px 12px;
   border-bottom: 1px solid var(--border-color);
   background-color: var(--bg-panel);
   position: sticky;
   top: 0;
   z-index: 10;
+  /* Hairline seal: border-collapse + sticky can leave a 1px strip where
+     a scrolling row shows through at the panel's top edge. */
+  box-shadow: 0 -1px 0 var(--bg-panel);
 }
 
 .downloads-table td {
