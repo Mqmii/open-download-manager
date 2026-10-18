@@ -271,9 +271,10 @@ private:
     // busy until the end, avoiding the multi-segment "tail" slowdown).
     void LaunchChunks(const std::string& url, uint64_t total);
     void WorkerThread(const std::string& url, int widx);
-    bool DownloadRange(const std::string& url, std::fstream& out,
-                       uint64_t off, uint64_t end, int attempts,
-                       std::string* err, std::atomic<uint64_t>* done_ctr);
+    bool DownloadRange(CURL* curl, const std::string& url, std::fstream& out,
+                       std::vector<char>& write_buf, uint64_t off, uint64_t end,
+                       int attempts, std::string* err,
+                       std::atomic<uint64_t>* done_ctr);
     uint64_t ChunkSize(uint64_t idx) const;
 
     // Per-thread curl worker (legacy single-segment path).

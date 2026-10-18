@@ -73,12 +73,23 @@ static int CurlProgressXfer(void* clientp,
     return 0;
 }
 
-// Write callback: appends received bytes to the part's open file and bumps
-// a done-counter. We pass pointers via void* userdata to avoid exposing
-// the private Part type here.
+// Per-worker RAM write buffer (4 MB). Accumulating incoming socket reads into
+// multi-megabyte blocks before touching the file turns millions of 4-16 KB
+// writes into large, contiguous, 64 KB-aligned flushes. Without this, 8-16
+// threads writing tiny slices into a 50 GB NTFS sparse file allocate physical
+// clusters interleaved across threads — fragmenting the file into hundreds of
+// thousands of 64 KB extents and thrashing the FTL mapping cache on DRAM-less
+// SSDs.
+constexpr size_t kWriteBufferSize = 4 * 1024 * 1024;
+constexpr long   kCurlBufferSize  = 128L * 1024L;
+
+// Write callback: buffers received bytes in RAM and flushes them in large
+// sequential blocks to the part's open file, bumping a done-counter. We pass
+// pointers via void* userdata to avoid exposing the private Part type here.
 struct WriteCtx {
     std::atomic<uint64_t>* done_counter;
     std::fstream*         out;
+    std::vector<char>*    buf;
     // How many bytes this request is still entitled to write, counted down as
     // they arrive. `limited` is separate from a zero count on purpose: once a
     // window is exactly filled `remaining` IS 0, and that must keep meaning
@@ -87,6 +98,7 @@ struct WriteCtx {
     // nothing after it to overwrite.
     bool                  limited   = false;
     uint64_t              remaining = 0;
+    size_t                buf_cap   = kWriteBufferSize;
     // Set when a write was refused for running past the window. This is a
     // property of the SERVER, not of the connection, so it is worth telling
     // apart from an ordinary write error: retrying earns the same answer five
@@ -94,9 +106,34 @@ struct WriteCtx {
     bool                  overflowed = false;
 
     void LimitTo(uint64_t bytes) {
-        limited = true; remaining = bytes; overflowed = false;
+        limited = true;
+        remaining = bytes;
+        overflowed = false;
+        if (buf) buf->clear();
+        buf_cap = bytes < kWriteBufferSize ? static_cast<size_t>(bytes)
+                                           : kWriteBufferSize;
     }
-    void NoLimit() { limited = false; remaining = 0; overflowed = false; }
+    void NoLimit() {
+        limited = false;
+        remaining = 0;
+        overflowed = false;
+        if (buf) buf->clear();
+        buf_cap = kWriteBufferSize;
+    }
+
+    bool Flush() {
+        if (!buf || buf->empty()) return out->good();
+        const size_t n = buf->size();
+        out->write(buf->data(), static_cast<std::streamsize>(n));
+        buf->clear();
+        if (!out->good()) {
+            // Roll back the buffered bytes that never made it onto disk so a
+            // failed flush cannot report a corrupt/incomplete range as done.
+            *done_counter -= n;
+            return false;
+        }
+        return true;
+    }
 };
 
 // RAII guard that cleans up a CURL* on every exit path.
@@ -107,6 +144,7 @@ struct CurlGuard {
 
 static size_t CurlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
     const size_t bytes = size * nmemb;
+    if (bytes == 0) return 0;
     auto* ctx = static_cast<WriteCtx*>(userdata);
 
     // Every connection writes into ONE shared output file at its own offset,
@@ -123,11 +161,25 @@ static size_t CurlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
         return 0;
     }
 
-    ctx->out->write(ptr, bytes);
-    // A failed write (disk full, I/O error) must NOT advance the counter or
-    // we'd report a corrupt file as complete. Returning fewer bytes than
-    // requested makes libcurl abort the transfer with a write error.
-    if (!ctx->out->good()) return 0;
+    if (ctx->buf && ctx->buf_cap > 0) {
+        if (ctx->buf->capacity() < ctx->buf_cap)
+            ctx->buf->reserve(ctx->buf_cap);
+        if (ctx->buf->size() + bytes > kWriteBufferSize) {
+            if (!ctx->Flush()) return 0;
+        }
+        if (bytes >= kWriteBufferSize) {
+            ctx->out->write(ptr, static_cast<std::streamsize>(bytes));
+            if (!ctx->out->good()) return 0;
+        } else {
+            ctx->buf->insert(ctx->buf->end(), ptr, ptr + bytes);
+        }
+    } else {
+        ctx->out->write(ptr, static_cast<std::streamsize>(bytes));
+        // A failed write (disk full, I/O error) must NOT advance the counter or
+        // we'd report a corrupt file as complete. Returning fewer bytes than
+        // requested makes libcurl abort the transfer with a write error.
+        if (!ctx->out->good()) return 0;
+    }
     if (ctx->limited) ctx->remaining -= bytes;
     *ctx->done_counter += bytes;
     return bytes;
@@ -883,10 +935,11 @@ void Downloader::SaveAllProgress() {
     f.write(reinterpret_cast<const char*>(&url_hash),   sizeof(url_hash));
     f.write(reinterpret_cast<const char*>(&done),       sizeof(done));
     if (chunked_mode_) {
-        for (uint64_t i = 0; i < chunks; ++i) {
-            uint8_t b = completed_[i].load() ? 1 : 0;
-            f.write(reinterpret_cast<const char*>(&b), 1);
-        }
+        std::vector<uint8_t> bm(static_cast<size_t>(chunks));
+        for (uint64_t i = 0; i < chunks; ++i)
+            bm[static_cast<size_t>(i)] = completed_[i].load() ? 1 : 0;
+        f.write(reinterpret_cast<const char*>(bm.data()),
+                static_cast<std::streamsize>(bm.size()));
     } else {
         uint8_t b = (done >= total_ && total_ > 0) ? 1 : 0;
         f.write(reinterpret_cast<const char*>(&b), 1);
@@ -1066,11 +1119,24 @@ void Downloader::LaunchChunks(const std::string& url, uint64_t total) {
     chunked_mode_ = true;
     total_        = total;
 
-    // Aim for ~part_count_ * 24 small chunks so finished workers can always
-    // pull more work; this keeps every connection busy until the very end.
+    // Aim for ~part_count_ * 24 chunks so finished workers can always pull more
+    // work. For multi-GB files, cap the chunk size at 16 MB (up to 4096 chunks)
+    // and round up to the 64 KB NTFS sparse compression unit so adjacent workers
+    // never share a sparse unit or write across unaligned 4 KB NAND pages.
     uint64_t want = static_cast<uint64_t>(part_count_) * 24;
     total_chunks_ = std::max<uint64_t>(want, 16);
     chunk_size_   = (total + total_chunks_ - 1) / total_chunks_;   // ceil
+    constexpr uint64_t kSparseUnit   = 64ULL * 1024;
+    constexpr uint64_t kMaxChunkSize = 16ULL * 1024 * 1024;
+    constexpr uint64_t kMaxChunks    = 4096;
+    if (chunk_size_ >= kSparseUnit) {
+        if (chunk_size_ > kMaxChunkSize) {
+            chunk_size_ = kMaxChunkSize;
+            if (total / chunk_size_ > kMaxChunks)
+                chunk_size_ = (total + kMaxChunks - 1) / kMaxChunks;
+        }
+        chunk_size_ = (chunk_size_ + kSparseUnit - 1) & ~(kSparseUnit - 1);
+    }
     total_chunks_ = (total + chunk_size_ - 1) / chunk_size_;       // exact count
     if (total_chunks_ < 1) total_chunks_ = 1;
 
@@ -1167,79 +1233,87 @@ void Downloader::WorkerThread(const std::string& url, int widx) {
         return;
     }
 
+    // One easy handle and one RAM write buffer per worker thread, reused across
+    // every chunk it claims. Reusing the handle keeps the TCP socket, TLS
+    // session, and DNS cache warm across chunks instead of paying a fresh
+    // handshake on each one.
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (fail_reason_.empty()) fail_reason_ = "curl_easy_init failed";
+        any_failed_.store(true);
+        active_workers_.fetch_sub(1);
+        return;
+    }
+    ApplyTlsPolicy(curl);
+    CurlGuard guard{curl};
+
+    std::vector<char> write_buf;
     const int kMaxAttempts = 6;
-    // (windows.h defines a max() macro in this TU — keep it a plain ternary)
-    const uint64_t stride = static_cast<uint64_t>(part_count_ > 0 ? part_count_ : 1);
 
-    // Phase 0: this worker's own stride (widx, widx+N, widx+2N, ...) — the
-    // connections spread across the WHOLE file like real ODM, which is what
-    // makes the part-info strip fill as a patchwork instead of left→right.
-    // Phase 1: the stride ran dry — steal whatever is still pending anywhere
-    // so a slow connection can never leave a tail behind.
-    for (int phase = 0; phase < 2 && !stop_requested_.load(); ++phase) {
-        const uint64_t begin = (phase == 0) ? static_cast<uint64_t>(widx) : 0;
-        const uint64_t step  = (phase == 0) ? stride : 1;
-        for (uint64_t idx = begin;
-             idx < total_chunks_ && !stop_requested_.load(); idx += step) {
-            if (completed_[idx].load()) continue;     // resume: already done
-            if (!ClaimChunk(idx)) continue;           // another worker owns it
+    // Claim chunks in contiguous order so all active connections stay within a
+    // tight sliding LBA window instead of scattering writes gigabytes apart
+    // across a 50 GB sparse file when one connection runs faster than another.
+    for (uint64_t idx = 0;
+         idx < total_chunks_ && !stop_requested_.load(); ++idx) {
+        if (completed_[idx].load()) continue;     // resume: already done
+        if (!ClaimChunk(idx)) continue;           // another worker owns it
 
-            uint64_t off = (total_ == 0) ? 0 : idx * chunk_size_;
-            uint64_t cs  = ChunkSize(idx);
-            uint64_t end = (total_ == 0) ? 0 : off + cs;
+        uint64_t off = (total_ == 0) ? 0 : idx * chunk_size_;
+        uint64_t cs  = ChunkSize(idx);
+        uint64_t end = (total_ == 0) ? 0 : off + cs;
 
-            // Publish this worker's live chunk state for the UI.
-            std::atomic<uint64_t> fallback_done{0};
-            std::atomic<uint64_t>* done_ctr = &fallback_done;
-            if (ws) {
-                ws->chunk_idx.store(idx);
-                ws->chunk_size.store(cs);
-                ws->chunk_done.store(0);
-                ws->active.store(1);
-                done_ctr = &ws->chunk_done;
-            }
-
-            std::string err;
-            uint64_t got = DownloadRange(url, out, off, end, kMaxAttempts, &err,
-                                         done_ctr);
-            if (ws) ws->active.store(0);
-            if (stop_requested_.load()) { phase = 2; break; }
-            if (got == 0) {
-                std::lock_guard<std::mutex> lk(mtx_);
-                if (fail_reason_.empty()) fail_reason_ = err;
-                any_failed_.store(true);
-                stop_requested_.store(true);   // abort the other workers
-                phase = 2;
-                break;
-            }
-            completed_[idx].store(1);
-            chunks_left_.fetch_sub(1);
-            SaveAllProgress();
+        // Publish this worker's live chunk state for the UI.
+        std::atomic<uint64_t> fallback_done{0};
+        std::atomic<uint64_t>* done_ctr = &fallback_done;
+        if (ws) {
+            ws->chunk_idx.store(idx);
+            ws->chunk_size.store(cs);
+            ws->chunk_done.store(0);
+            ws->active.store(1);
+            done_ctr = &ws->chunk_done;
         }
+
+        std::string err;
+        uint64_t got = DownloadRange(curl, url, out, write_buf, off, end,
+                                     kMaxAttempts, &err, done_ctr);
+        if (ws) ws->active.store(0);
+        if (stop_requested_.load()) break;
+        if (got == 0) {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (fail_reason_.empty()) fail_reason_ = err;
+            any_failed_.store(true);
+            stop_requested_.store(true);   // abort the other workers
+            break;
+        }
+        completed_[idx].store(1);
+        downloaded_.fetch_add(cs);
+        chunks_left_.fetch_sub(1);
+        SaveAllProgress();
     }
 
     out.close();
     active_workers_.fetch_sub(1);
 }
 
-bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
+bool Downloader::DownloadRange(CURL* curl, const std::string& url,
+                               std::fstream& out, std::vector<char>& write_buf,
                                uint64_t off, uint64_t end, int attempts,
                                std::string* err,
                                std::atomic<uint64_t>* done_ctr) {
     // `done_ctr` counts bytes written for this chunk; the caller owns it (a
     // per-worker slot that the UI can snapshot) and resets it before the call.
     std::atomic<uint64_t>& done = *done_ctr;
-    WriteCtx ctx{&done, &out};
+    WriteCtx ctx{&done, &out, &write_buf};
     XferCtx  xfer{&stop_requested_, &live_bytes_, 0};
     char ebuf[CURL_ERROR_SIZE] = {0};
 
     for (int attempt = 0; attempt < attempts; ++attempt) {
         if (stop_requested_.load()) return 0;
 
-        CURL* curl = curl_easy_init();
-        if (!curl) { if (err) *err = "curl_easy_init failed"; return 0; }
+        curl_easy_reset(curl);
         ApplyTlsPolicy(curl);
-        CurlGuard guard{curl};   // cleans up on every exit path
+        curl_easy_setopt(curl, CURLOPT_COOKIELIST, "ALL");
 
         uint64_t seg_start = off + done.load();   // resume from what we have
         xfer.prev = 0;   // reset for this curl_easy_perform call
@@ -1255,6 +1329,7 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, kCurlBufferSize);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlProgressXfer);
@@ -1283,6 +1358,9 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
         out.seekp(static_cast<std::streamoff>(seg_start));
 
         CURLcode rc = curl_easy_perform(curl);
+        if (!ctx.Flush() && rc == CURLE_OK)
+            rc = CURLE_WRITE_ERROR;
+        out.flush();
 
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -1308,7 +1386,7 @@ bool Downloader::DownloadRange(const std::string& url, std::fstream& out,
             }
             if (end == 0) return done.load();   // stream finished
             if (done.load() >= (end - off)) return done.load();
-            // Short read: retry from the corrected offset.
+            // Short read: the loop retries from the corrected offset.
         } else if (err) {
             *err = std::string(ebuf);
         }
@@ -1346,7 +1424,8 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         return;
     }
 
-    WriteCtx ctx{&part.done, &out};
+    std::vector<char> write_buf;
+    WriteCtx ctx{&part.done, &out, &write_buf};
     XferCtx  xfer{&stop_requested_, &live_bytes_, 0};
 
     const int kMaxAttempts = 6;
@@ -1389,6 +1468,7 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, kCurlBufferSize);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlProgressXfer);
@@ -1422,6 +1502,8 @@ void Downloader::FetchPart(const std::string& url, Part& part) {
         out.seekp(static_cast<std::streamoff>(seg_start));
 
         CURLcode rc = curl_easy_perform(curl);
+        if (!ctx.Flush() && rc == CURLE_OK)
+            rc = CURLE_WRITE_ERROR;
 
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
