@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -124,9 +125,15 @@ private:
     void ListenLoop();
     void HandleClient(uintptr_t client);
 
+    struct ClientSlot {
+        std::thread       th;
+        std::atomic<bool> done{false};
+    };
+
     std::atomic<bool> running_{false};
     uintptr_t  listen_sock_ = static_cast<uintptr_t>(~0ull); // SOCKET
     std::thread thread_;
+    std::vector<std::unique_ptr<ClientSlot>> client_slots_;
     AddCallback cb_;
     std::string token_;
     uint16_t    port_ = 0;      // the bound port, checked against Host

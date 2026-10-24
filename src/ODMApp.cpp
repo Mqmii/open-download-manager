@@ -149,32 +149,35 @@ static std::string NativeSaveDialog(const std::string& suggested_name) {
 #endif
 }
 
-// Return the user's OS Downloads folder, or "" on failure.
+// Return the user's OS Downloads folder, or "" on failure. Cached after the
+// first lookup so periodic callers (like JS_GetDiskSpace) do not hit the Shell
+// known-folder API and COM allocator on every poll.
 static std::string GetDownloadsFolder() {
+    static const std::string cached = []() -> std::string {
 #if defined(_WIN32)
-    PWSTR path = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &path))) {
-        std::wstring ws(path);
-        CoTaskMemFree(path);
-        // Convert wide string to UTF-8.
-        int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1,
-                                      nullptr, 0, nullptr, nullptr);
-        if (len > 0) {
-            std::string out(static_cast<size_t>(len) - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1,
-                                out.data(), len, nullptr, nullptr);
-            return out;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &path))) {
+            std::wstring ws(path);
+            CoTaskMemFree(path);
+            int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1,
+                                          nullptr, 0, nullptr, nullptr);
+            if (len > 0) {
+                std::string out(static_cast<size_t>(len) - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1,
+                                    out.data(), len, nullptr, nullptr);
+                return out;
+            }
         }
-    }
-    return "";
+        return "";
 #else
-    // POSIX / macOS fallback: ~/Downloads
-    const char* home = std::getenv("HOME");
-    if (!home) return "";
-    fs::path p = fs::path(home) / "Downloads";
-    if (fs::is_directory(p)) return p.string();
-    return "";
+        const char* home = std::getenv("HOME");
+        if (!home) return "";
+        fs::path p = fs::path(home) / "Downloads";
+        if (fs::is_directory(p)) return p.string();
+        return "";
 #endif
+    }();
+    return cached;
 }
 
 #if defined(_WIN32)
@@ -1179,17 +1182,29 @@ void ODMApp::OnUpdate() {
         }
     }
 
-    // Drain any pending JS that worker threads queued.
+    // Drain any pending JS that worker threads queued. Coalesce redundant
+    // intermediate UI.onProgress calls accumulated within the same frame and
+    // evaluate the batch in a single EvaluateScript call.
     std::queue<std::string> local;
     {
         std::lock_guard<std::mutex> lk(mail_->mtx);
         local.swap(mail_->js);
     }
-    if (!overlay_ || !overlay_->view()) return;
+    if (!overlay_ || !overlay_->view() || local.empty()) return;
+    std::string batch;
     while (!local.empty()) {
-        overlay_->view()->EvaluateScript(
-            ultralight::String(local.front().c_str()));
+        std::string cur = std::move(local.front());
         local.pop();
+        if (!local.empty() &&
+            cur.rfind("UI.onProgress(", 0) == 0 &&
+            local.front().rfind("UI.onProgress(", 0) == 0) {
+            continue;
+        }
+        if (!batch.empty()) batch += '\n';
+        batch += cur;
+    }
+    if (!batch.empty()) {
+        overlay_->view()->EvaluateScript(ultralight::String(batch.c_str()));
     }
 }
 

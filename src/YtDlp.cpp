@@ -350,18 +350,22 @@ int Run(const std::vector<std::string>& args,
             break;
         }
         DWORD avail = 0;
-        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) break;
-        if (avail == 0) {
-            // Nothing buffered: either the child is thinking, or it is gone
-            // and the pipe is drained.
-            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
-                if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) ||
-                    avail == 0)
-                    break;
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                continue;
+        if (cancel) {
+            if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) break;
+            if (avail == 0) {
+                // Nothing buffered: wait up to 10ms for the child to exit so
+                // we wake immediately on process exit while still checking the
+                // cancel flag promptly.
+                if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) {
+                    if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) ||
+                        avail == 0)
+                        break;
+                } else {
+                    continue;
+                }
             }
+        } else {
+            avail = sizeof(buf);
         }
         DWORD got = 0;
         if (!ReadFile(rd, buf, (DWORD)std::min<DWORD>(avail, sizeof(buf)),

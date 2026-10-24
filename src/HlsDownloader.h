@@ -95,10 +95,12 @@ private:
                             const std::string& base_url);
     bool FetchToMemory(const std::string& url, std::vector<uint8_t>& out,
                        long* out_http_code, int worker_index,
-                       const char* range = nullptr);
+                       const char* range = nullptr,
+                       CURL* reuse_curl = nullptr);
     bool FetchSegment(const std::string& url, std::vector<uint8_t>& out,
                       int worker_index, bool ranged = false,
-                      uint64_t off = 0, uint64_t len = 0);
+                      uint64_t off = 0, uint64_t len = 0,
+                      CURL* reuse_curl = nullptr);
     bool FetchKey();
     bool DecryptSegment(std::vector<uint8_t>& data, uint64_t seq);
 

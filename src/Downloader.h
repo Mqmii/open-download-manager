@@ -296,6 +296,7 @@ private:
     std::vector<uint8_t> LoadProgress(const std::string& output_path,
                                       uint64_t& out_done);
     void SaveAllProgress();
+    void SaveProgressThrottled();
 
     // Sleep up to `ms`, returning early if a stop was requested.
     void InterruptibleSleep(int ms);
@@ -372,8 +373,10 @@ private:
     // threads can use it without synchronization. The slist is owned by us
     // and freed on the next Start / at destruction (it must outlive every
     // easy handle that used it).
-    RequestContext    req_ctx_;
-    curl_slist*       req_headers_ = nullptr;
+    RequestContext           req_ctx_;
+    curl_slist*              req_headers_ = nullptr;
+    std::vector<std::string> req_cookie_lines_;   // pre-parsed for url_
+    std::atomic<int64_t>     last_progress_save_ms_{0};
     std::thread       orchestrator_;
     std::thread       progress_thread_;
     // Serializes Start(): the running_ check + thread join must be atomic

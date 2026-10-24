@@ -266,6 +266,23 @@ int main() {
         Cleanup(out);
 
         odm::Downloader dl;
+        std::atomic<int> max_seg_cells{0};
+        dl.SetProgressCallback([&](const odm::ProgressInfo&) {
+            const std::string js = dl.GetPartInfoJson("t2");
+            const size_t pos = js.find("\"segments\":[");
+            if (pos != std::string::npos) {
+                const size_t start = pos + 12;
+                const size_t end = js.find(']', start);
+                if (end != std::string::npos && end > start) {
+                    int cells = 1;
+                    for (size_t i = start; i < end; ++i)
+                        if (js[i] == ',') ++cells;
+                    int prev = max_seg_cells.load();
+                    while (cells > prev &&
+                           !max_seg_cells.compare_exchange_weak(prev, cells)) {}
+                }
+            }
+        });
         dl.Start(srv.Url(), out, "t2");
         const odm::DownloadResult r = dl.WaitForCompletion();
 
@@ -274,6 +291,9 @@ int main() {
         Check("file is byte-for-byte correct", FileMatches(out, srv.Body()));
         Check("the file really was split across connections",
               srv.Served() > 3);
+        Check("GetPartInfoJson downsamples 192 chunks to at most 96 UI cells",
+              max_seg_cells.load() > 0 && max_seg_cells.load() <= 96,
+              std::to_string(max_seg_cells.load()) + " cells");
         std::printf("       requests=%d (ranged=%d)\n",
                     srv.Served(), srv.Ranged());
         Cleanup(out);

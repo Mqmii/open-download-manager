@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.3.2)
+        VERSION 0.3.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -211,6 +211,8 @@ if(ODM_BUILD_TESTS)
     add_executable(stop_status_test
         tools/stop_status_test.cpp
         src/DashDownloader.cpp
+        src/HlsDownloader.cpp
+        src/TrackId.cpp
         src/Downloader.cpp
         src/Muxer.cpp)
     target_include_directories(stop_status_test PRIVATE src ${FFMPEG_INCLUDE_DIRS})

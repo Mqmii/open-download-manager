@@ -332,6 +332,35 @@ std::vector<std::string> ScopeCookieHeader(const std::string& header,
     return lines;
 }
 
+std::vector<std::string> BuildCookieLines(const RequestContext& ctx,
+                                          const std::string& url) {
+    std::vector<std::string> lines;
+    if (!ctx.cookie_jar.empty()) {
+        size_t pos = 0;
+        while (pos < ctx.cookie_jar.size()) {
+            size_t nl = ctx.cookie_jar.find('\n', pos);
+            if (nl == std::string::npos) nl = ctx.cookie_jar.size();
+            std::string line = ctx.cookie_jar.substr(pos, nl - pos);
+            pos = nl + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            // Seven fields, and a '#' would make curl read it as a comment.
+            if (line.empty() || line[0] == '#') continue;
+            if (std::count(line.begin(), line.end(), '\t') != 6) continue;
+            lines.push_back(std::move(line));
+        }
+    } else if (!ctx.cookies.empty()) {
+        lines = ScopeCookieHeader(ctx.cookies, UrlHost(url));
+    }
+    return lines;
+}
+
+void ApplyCookieLines(CURL* curl, const std::vector<std::string>& lines) {
+    if (lines.empty()) return;
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");   // engine on, no file
+    for (const std::string& line : lines)
+        curl_easy_setopt(curl, CURLOPT_COOKIELIST, line.c_str());
+}
+
 }  // namespace
 
 void ApplyRequestContext(CURL* curl, const RequestContext& ctx,
@@ -350,32 +379,22 @@ void ApplyRequestContext(CURL* curl, const RequestContext& ctx,
     // Cookies: hand them to the engine, never to CURLOPT_COOKIE (see the
     // header). Each line carries its own domain/path/secure scope, so curl
     // re-decides what to send at every hop of a redirect.
-    std::vector<std::string> lines;
-    if (!ctx.cookie_jar.empty()) {
-        size_t pos = 0;
-        while (pos < ctx.cookie_jar.size()) {
-            size_t nl = ctx.cookie_jar.find('\n', pos);
-            if (nl == std::string::npos) nl = ctx.cookie_jar.size();
-            std::string line = ctx.cookie_jar.substr(pos, nl - pos);
-            pos = nl + 1;
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            // Seven fields, and a '#' would make curl read it as a comment.
-            if (line.empty() || line[0] == '#') continue;
-            if (std::count(line.begin(), line.end(), '\t') != 6) continue;
-            lines.push_back(std::move(line));
-        }
-    } else if (!ctx.cookies.empty()) {
-        lines = ScopeCookieHeader(ctx.cookies, UrlHost(url));
-    }
-    if (lines.empty()) return;
-
-    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");   // engine on, no file
-    for (const std::string& line : lines)
-        curl_easy_setopt(curl, CURLOPT_COOKIELIST, line.c_str());
+    ApplyCookieLines(curl, BuildCookieLines(ctx, url));
 }
 
 void Downloader::ApplyRequestContext(CURL* curl, const std::string& url) const {
-    odm::ApplyRequestContext(curl, req_ctx_, url, req_headers_);
+    if (!req_ctx_.referrer.empty())
+        curl_easy_setopt(curl, CURLOPT_REFERER, req_ctx_.referrer.c_str());
+    if (!req_ctx_.user_agent.empty())
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, req_ctx_.user_agent.c_str());
+    if (req_headers_)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, req_headers_);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    if (url == url_) {
+        ApplyCookieLines(curl, req_cookie_lines_);
+    } else {
+        ApplyCookieLines(curl, BuildCookieLines(req_ctx_, url));
+    }
 }
 
 void Downloader::SetPartCount(int parts) {
@@ -441,6 +460,8 @@ void Downloader::Start(const std::string& url, const std::string& output_path,
     req_ctx_ = ctx;
     for (const auto& h : ctx.extra_headers)
         req_headers_ = curl_slist_append(req_headers_, h.c_str());
+    req_cookie_lines_ = BuildCookieLines(ctx, url);
+    last_progress_save_ms_.store(0, std::memory_order_relaxed);
 
     url_         = url;
     resume_key_  = resume_key;
@@ -496,6 +517,10 @@ void Downloader::Start(const std::string& url, const std::string& output_path,
         if (chunked_mode_) {
             for (auto& w : workers_)
                 if (w.joinable()) w.join();
+            // Ensure the final chunk bitmap is flushed if the run stopped or
+            // failed after a throttled worker save.
+            if (any_failed_.load() || stop_requested_.load())
+                SaveAllProgress();
         } else {
             for (auto& p : parts_)
                 if (p.thread.joinable()) p.thread.join();
@@ -921,28 +946,55 @@ void Downloader::SaveAllProgress() {
         chunk_size = total_;
         done       = parts_[0].done.load();
     }
-    std::ofstream f(output_path_ + ".odmprog",
-                   std::ios::binary | std::ios::trunc);
-    if (!f) return;
+
     uint32_t magic = kSidecarMagic, version = kSidecarVersion;
     uint64_t total = total_;
     uint64_t url_hash = HashUrl(ResumeIdentity());
-    f.write(reinterpret_cast<const char*>(&magic),      sizeof(magic));
-    f.write(reinterpret_cast<const char*>(&version),    sizeof(version));
-    f.write(reinterpret_cast<const char*>(&total),      sizeof(total));
-    f.write(reinterpret_cast<const char*>(&chunk_size), sizeof(chunk_size));
-    f.write(reinterpret_cast<const char*>(&chunks),     sizeof(chunks));
-    f.write(reinterpret_cast<const char*>(&url_hash),   sizeof(url_hash));
-    f.write(reinterpret_cast<const char*>(&done),       sizeof(done));
+
+    // Assemble header (48 bytes) + bitmap into one contiguous buffer so the
+    // sidecar is written in a single syscall instead of 8 small writes.
+    std::vector<uint8_t> buf;
+    buf.reserve(48 + static_cast<size_t>(chunks));
+    auto append = [&buf](const void* p, size_t n) {
+        const auto* b = static_cast<const uint8_t*>(p);
+        buf.insert(buf.end(), b, b + n);
+    };
+    append(&magic,      sizeof(magic));
+    append(&version,    sizeof(version));
+    append(&total,      sizeof(total));
+    append(&chunk_size, sizeof(chunk_size));
+    append(&chunks,     sizeof(chunks));
+    append(&url_hash,   sizeof(url_hash));
+    append(&done,       sizeof(done));
     if (chunked_mode_) {
-        std::vector<uint8_t> bm(static_cast<size_t>(chunks));
         for (uint64_t i = 0; i < chunks; ++i)
-            bm[static_cast<size_t>(i)] = completed_[i].load() ? 1 : 0;
-        f.write(reinterpret_cast<const char*>(bm.data()),
-                static_cast<std::streamsize>(bm.size()));
+            buf.push_back(completed_[i].load(std::memory_order_relaxed) ? 1 : 0);
     } else {
         uint8_t b = (done >= total_ && total_ > 0) ? 1 : 0;
-        f.write(reinterpret_cast<const char*>(&b), 1);
+        buf.push_back(b);
+    }
+
+    std::ofstream f(output_path_ + ".odmprog",
+                   std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    f.write(reinterpret_cast<const char*>(buf.data()),
+            static_cast<std::streamsize>(buf.size()));
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    last_progress_save_ms_.store(now_ms, std::memory_order_relaxed);
+}
+
+void Downloader::SaveProgressThrottled() {
+    if (chunks_left_.load(std::memory_order_relaxed) == 0) {
+        SaveAllProgress();
+        return;
+    }
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int64_t prev = last_progress_save_ms_.load(std::memory_order_relaxed);
+    if (now_ms - prev >= 250) {
+        SaveAllProgress();
     }
 }
 
@@ -980,10 +1032,32 @@ std::string Downloader::GetPartInfoJson(const std::string& id) {
                 if (idx < total_chunks_ && state[idx] != 2) state[idx] = 1;
             }
         }
+        // Downsample large chunk maps (up to 4,096 chunks) to at most 96 UI
+        // cells right here so we don't serialize and parse 4,096 numbers on
+        // the UI thread twice a second.
+        constexpr uint64_t kMaxUiCells = 96;
         js << ",\"segments\":[";
-        for (uint64_t i = 0; i < total_chunks_; ++i) {
-            if (i) js << ',';
-            js << static_cast<int>(state[i]);
+        if (total_chunks_ <= kMaxUiCells) {
+            for (uint64_t i = 0; i < total_chunks_; ++i) {
+                if (i) js << ',';
+                js << static_cast<int>(state[i]);
+            }
+        } else {
+            const double per = static_cast<double>(total_chunks_) /
+                               static_cast<double>(kMaxUiCells);
+            for (uint64_t c = 0; c < kMaxUiCells; ++c) {
+                const uint64_t from = static_cast<uint64_t>(c * per);
+                uint64_t to = static_cast<uint64_t>((c + 1) * per);
+                if (to <= from) to = from + 1;
+                if (to > total_chunks_) to = total_chunks_;
+                bool all_done = true, any_active = false, any_done = false;
+                for (uint64_t i = from; i < to; ++i) {
+                    if (state[i] == 2) any_done = true; else all_done = false;
+                    if (state[i] == 1) any_active = true;
+                }
+                if (c) js << ',';
+                js << (all_done ? 2 : ((any_active || any_done) ? 1 : 0));
+            }
         }
         js << "],\"parts\":[";
         bool first = true;
@@ -1289,7 +1363,7 @@ void Downloader::WorkerThread(const std::string& url, int widx) {
         completed_[idx].store(1);
         downloaded_.fetch_add(cs);
         chunks_left_.fetch_sub(1);
-        SaveAllProgress();
+        SaveProgressThrottled();
     }
 
     out.close();

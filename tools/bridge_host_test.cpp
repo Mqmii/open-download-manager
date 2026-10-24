@@ -14,6 +14,7 @@
 #include <ws2tcpip.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -229,6 +230,39 @@ int main() {
           StatusOf(Post("/add", "127.0.0.1:" + port, token,
                         "{\"url\":\"https://example.test/f.bin\"}")) == 200);
     Check("exactly one more was queued", adds.load() == 2);
+
+    std::printf("a slow or stalled connection does not block /ping or /add\n");
+    {
+        SOCKET slow = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons(kPort);
+        inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+        const bool connected = (slow != INVALID_SOCKET &&
+                                connect(slow, (sockaddr*)&a, sizeof(a)) == 0);
+        if (connected) {
+            const std::string partial =
+                "POST /ytformats HTTP/1.1\r\nHost: 127.0.0.1:" + port + "\r\n";
+            send(slow, partial.data(), (int)partial.size(), 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        const std::string ping_r = Get("/ping", "127.0.0.1:" + port, ours);
+        const std::string add_r  = Post("/add", "127.0.0.1:" + port, token,
+                                        "{\"url\":\"https://example.test/fast.bin\"}",
+                                        ours);
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+        if (slow != INVALID_SOCKET) closesocket(slow);
+
+        Check("GET /ping succeeds while another client is stalled",
+              StatusOf(ping_r) == 200);
+        Check("POST /add succeeds while another client is stalled",
+              StatusOf(add_r) == 200 && adds.load() == 3);
+        Check("  and both complete without waiting for the 5s socket timeout",
+              elapsed_ms < 1000);
+    }
 
     server.Stop();
     WSACleanup();

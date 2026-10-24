@@ -231,11 +231,17 @@ function uiPrompt(title, message, value = '') {
 }
 
 // Disk Space Widget
+let _diskEls = null;
 function updateDiskWidget() {
-  const pctEl = document.querySelector('.disk-pct-text');
-  const arcEl = document.querySelector('.disk-active-circle');
-  const centerEl = document.querySelector('.disk-center-text');
-  const pathEl = document.querySelector('.disk-path');
+  if (!_diskEls) {
+    _diskEls = {
+      pctEl: document.querySelector('.disk-pct-text'),
+      arcEl: document.querySelector('.disk-active-circle'),
+      centerEl: document.querySelector('.disk-center-text'),
+      pathEl: document.querySelector('.disk-path')
+    };
+  }
+  const { pctEl, arcEl, centerEl, pathEl } = _diskEls;
 
   if (typeof GetDiskSpace !== 'function') return;
 
@@ -274,8 +280,13 @@ function initDiskWidget() {
     if (typeof GetDiskSpace === 'function') {
       clearInterval(bridgeCheck);
       updateDiskWidget();
-      // Refresh the disk widget every 5 seconds so it tracks real usage.
-      setInterval(updateDiskWidget, 5000);
+      // Refresh the disk widget every 5 seconds while a download is active so
+      // it tracks real usage without polling the filesystem when idle.
+      setInterval(() => {
+        if (!document.hidden && downloads.some(d => d.status === 'downloading')) {
+          updateDiskWidget();
+        }
+      }, 5000);
     }
   }, 100);
 
@@ -330,11 +341,11 @@ function saveData() {
   lastSaveTs = Date.now();
 }
 
-// Save at most ~once per second during progress ticks to avoid stringifying
-// the whole list 10x/sec (GC pressure + jank in the embedded webview).
+// Save at most once every 3 seconds during progress ticks to avoid
+// stringifying the whole list 10x/sec (GC pressure + jank in the webview).
 function throttledSave() {
   const now = Date.now();
-  if (now - lastSaveTs >= 1000) saveData();
+  if (now - lastSaveTs >= 3000) saveData();
 }
 
 // ---- Auto-Retry Helpers ----
@@ -454,18 +465,30 @@ function dequeue(id) {
 }
 
 // Patch only the active row's progress bar/labels instead of rebuilding the
-// entire table on every progress tick.
+// entire table on every progress tick. Caches the active row's DOM nodes so
+// 10 Hz ticks don't re-run querySelector/querySelectorAll every 100ms.
+let _activeRowCache = null;
 function patchActiveRow(dl) {
-  const tr = el.tableBody.querySelector(`tr[data-id="${dl.id}"]`);
-  if (!tr) return false;
-  const fill = tr.querySelector('.progress-fill');
-  const stats = tr.querySelectorAll('.progress-stats-row span');
-  if (!fill || stats.length < 2) return false;   // row isn't in "downloading" layout
-  fill.style.width = dl.pct + '%';
-  stats[0].textContent = `${dl.downloaded || '0 B'} of ${dl.total || '0 B'} (${dl.pct.toFixed(0)}%)`;
-  stats[1].textContent = dl.speed || '';
-  const timeCell = tr.children[4];
-  if (timeCell) timeCell.textContent = dl.timeLeft || '--';
+  let c = _activeRowCache;
+  if (!c || c.id !== dl.id || !c.tr.isConnected) {
+    const tr = el.tableBody.querySelector(`tr[data-id="${dl.id}"]`);
+    if (!tr) return false;
+    const fill = tr.querySelector('.progress-fill');
+    const stats = tr.querySelectorAll('.progress-stats-row span');
+    if (!fill || stats.length < 2) return false;   // row isn't in "downloading" layout
+    c = _activeRowCache = {
+      id: dl.id,
+      tr,
+      fill,
+      stat0: stats[0],
+      stat1: stats[1],
+      timeCell: tr.children[4] || null
+    };
+  }
+  c.fill.style.width = dl.pct + '%';
+  c.stat0.textContent = `${dl.downloaded || '0 B'} of ${dl.total || '0 B'} (${dl.pct.toFixed(0)}%)`;
+  c.stat1.textContent = dl.speed || '';
+  if (c.timeCell) c.timeCell.textContent = dl.timeLeft || '--';
   return true;
 }
 

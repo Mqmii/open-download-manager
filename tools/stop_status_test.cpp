@@ -26,6 +26,10 @@
 
 #include "DashDownloader.h"
 #include "Downloader.h"
+#include "HlsDownloader.h"
+#include <bcrypt.h>
+#include <fstream>
+#pragma comment(lib, "bcrypt.lib")
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -335,6 +339,157 @@ int main() {
 
         Cleanup(out);
         srv.Stop();
+    }
+
+    std::printf("HLS worker keep-alive connection reuse and AES-128 decryption\n");
+    {
+        // Keep-alive HTTP/1.1 loopback server serving an AES-128 encrypted
+        // 12-segment playlist. Counts accepted TCP sockets vs served HTTP
+        // requests to prove HlsDownloader::Worker reuses its CURL* handle.
+        struct HlsKeepAliveServer {
+            SOCKET sock = INVALID_SOCKET;
+            uint16_t port = 0;
+            std::thread th;
+            std::atomic<int> accepted{0};
+            std::atomic<int> requests{0};
+            std::string key_bytes = "0123456789abcdef"; // 16 bytes
+            std::vector<std::string> enc_segs;
+            std::string expected_plain;
+
+            static std::string EncryptAes128Cbc(const std::string& plain,
+                                                const std::string& key,
+                                                uint64_t seq) {
+                uint8_t iv[16] = {0};
+                for (int i = 0; i < 8; ++i)
+                    iv[8 + i] = static_cast<uint8_t>((seq >> ((7 - i) * 8)) & 0xFF);
+                BCRYPT_ALG_HANDLE hAlg = nullptr;
+                BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+                BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
+                                  reinterpret_cast<PUCHAR>(BCRYPT_CHAIN_MODE_CBC),
+                                  sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
+                BCRYPT_KEY_HANDLE hKey = nullptr;
+                BCryptGenerateSymmetricKey(
+                    hAlg, &hKey, nullptr, 0,
+                    reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())), 16, 0);
+                ULONG out_len = 0;
+                BCryptEncrypt(hKey,
+                              reinterpret_cast<PUCHAR>(const_cast<char*>(plain.data())),
+                              static_cast<ULONG>(plain.size()), nullptr, iv, 16,
+                              nullptr, 0, &out_len, BCRYPT_BLOCK_PADDING);
+                std::string out(out_len, '\0');
+                uint8_t iv2[16] = {0};
+                for (int i = 0; i < 8; ++i)
+                    iv2[8 + i] = static_cast<uint8_t>((seq >> ((7 - i) * 8)) & 0xFF);
+                BCryptEncrypt(hKey,
+                              reinterpret_cast<PUCHAR>(const_cast<char*>(plain.data())),
+                              static_cast<ULONG>(plain.size()), nullptr, iv2, 16,
+                              reinterpret_cast<PUCHAR>(out.data()), out_len,
+                              &out_len, BCRYPT_BLOCK_PADDING);
+                BCryptDestroyKey(hKey);
+                BCryptCloseAlgorithmProvider(hAlg, 0);
+                return out;
+            }
+
+            bool Start() {
+                for (int i = 0; i < 12; ++i) {
+                    std::string seg(1000 + i * 17, static_cast<char>('A' + (i % 26)));
+                    expected_plain += seg;
+                    enc_segs.push_back(EncryptAes128Cbc(seg, key_bytes, i));
+                }
+                sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (sock == INVALID_SOCKET) return false;
+                sockaddr_in a{};
+                a.sin_family = AF_INET;
+                a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                a.sin_port = 0;
+                if (bind(sock, (sockaddr*)&a, sizeof(a)) || listen(sock, 32))
+                    return false;
+                int len = sizeof(a);
+                getsockname(sock, (sockaddr*)&a, &len);
+                port = ntohs(a.sin_port);
+                th = std::thread([this] {
+                    for (;;) {
+                        SOCKET c = accept(sock, nullptr, nullptr);
+                        if (c == INVALID_SOCKET) return;
+                        ++accepted;
+                        std::thread([this, c] { ServeConn(c); }).detach();
+                    }
+                });
+                return true;
+            }
+
+            void ServeConn(SOCKET c) {
+                DWORD tv = 2000;
+                setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+                std::string buf_in;
+                char tmp[4096];
+                for (;;) {
+                    while (buf_in.find("\r\n\r\n") == std::string::npos) {
+                        int n = recv(c, tmp, sizeof(tmp), 0);
+                        if (n <= 0) { closesocket(c); return; }
+                        buf_in.append(tmp, n);
+                    }
+                    const size_t hdr_end = buf_in.find("\r\n\r\n");
+                    const std::string req = buf_in.substr(0, hdr_end);
+                    buf_in.erase(0, hdr_end + 4);
+                    ++requests;
+
+                    std::string body;
+                    if (req.find("GET /index.m3u8 ") == 0) {
+                        body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n"
+                               "#EXT-X-MEDIA-SEQUENCE:0\n"
+                               "#EXT-X-KEY:METHOD=AES-128,URI=\"/key.bin\"\n";
+                        for (int i = 0; i < 12; ++i)
+                            body += "#EXTINF:2.0,\n/seg" + std::to_string(i) + ".ts\n";
+                        body += "#EXT-X-ENDLIST\n";
+                    } else if (req.find("GET /key.bin ") == 0) {
+                        body = key_bytes;
+                    } else if (req.find("GET /seg") == 0) {
+                        int idx = std::atoi(req.c_str() + 8);
+                        if (idx >= 0 && idx < (int)enc_segs.size())
+                            body = enc_segs[idx];
+                    }
+                    std::string resp =
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                        "Connection: keep-alive\r\n\r\n" + body;
+                    send(c, resp.data(), (int)resp.size(), 0);
+                }
+            }
+
+            void Stop() {
+                if (sock != INVALID_SOCKET) { closesocket(sock); sock = INVALID_SOCKET; }
+                if (th.joinable()) th.join();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } hls_srv;
+
+        if (hls_srv.Start()) {
+            const std::string out = "ss_hls_out.ts";
+            std::remove(out.c_str());
+            odm::HlsDownloader hls;
+            hls.SetPartCount(2);
+            hls.Start("http://127.0.0.1:" + std::to_string(hls_srv.port) + "/index.m3u8",
+                      out, "hls-ka");
+            const odm::DownloadResult hr = hls.WaitForCompletion();
+
+            std::ifstream f(out, std::ios::binary);
+            std::string got_plain((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+            f.close();
+            std::remove(out.c_str());
+            std::remove((out + ".id").c_str());
+
+            Check("AES-128 HLS download completed",
+                  hr.status == odm::DownloadStatus::Completed);
+            Check("decrypted output matches plaintext across all 12 segments",
+                  got_plain == hls_srv.expected_plain);
+            Check("2 workers reused keep-alive sockets across 12 segments",
+                  hls_srv.requests.load() >= 14 && hls_srv.accepted.load() <= 5);
+            std::printf("       requests=%d accepted_sockets=%d\n",
+                        hls_srv.requests.load(), hls_srv.accepted.load());
+            hls_srv.Stop();
+        }
     }
 
     curl_global_cleanup();

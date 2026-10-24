@@ -236,12 +236,17 @@ void HlsDownloader::ApplyRequestContext(CURL* curl, const std::string& url) cons
 bool HlsDownloader::FetchToMemory(const std::string& url,
                                   std::vector<uint8_t>& out,
                                   long* out_http_code, int worker_index,
-                                  const char* range) {
-    CURL* curl = curl_easy_init();
+                                  const char* range, CURL* reuse_curl) {
+    CURL* curl = reuse_curl ? reuse_curl : curl_easy_init();
     if (!curl) return false;
+    if (reuse_curl) {
+        curl_easy_reset(curl);
+        curl_easy_setopt(curl, CURLOPT_COOKIELIST, "ALL");
+    }
     ApplyTlsPolicy(curl);
     FetchBuf fb{ &out, worker_index >= 0 ? inflight_[worker_index].get() : nullptr };
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 128L * 1024L);
     if (range) curl_easy_setopt(curl, CURLOPT_RANGE, range);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, FetchWrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &fb);
@@ -270,7 +275,7 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     if (out_http_code) *out_http_code = code;
-    curl_easy_cleanup(curl);
+    if (!reuse_curl) curl_easy_cleanup(curl);
     return rc == CURLE_OK;
 }
 
@@ -280,7 +285,8 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
 // ONE .mp4 file) and rejects servers that ignore Range and send everything.
 bool HlsDownloader::FetchSegment(const std::string& url,
                                  std::vector<uint8_t>& out, int worker_index,
-                                 bool ranged, uint64_t off, uint64_t len) {
+                                 bool ranged, uint64_t off, uint64_t len,
+                                 CURL* reuse_curl) {
     char range[64] = {0};
     if (ranged)
         std::snprintf(range, sizeof(range), "%llu-%llu",
@@ -293,7 +299,8 @@ bool HlsDownloader::FetchSegment(const std::string& url,
         if (inflight_[worker_index]) inflight_[worker_index]->store(0);
         long code = 0;
         const bool net_ok = FetchToMemory(url, out, &code, worker_index,
-                                          ranged ? range : nullptr);
+                                          ranged ? range : nullptr,
+                                          reuse_curl);
         if (inflight_[worker_index]) inflight_[worker_index]->store(0);
         if (net_ok && code >= 200 && code < 300) {
             if (!ranged || out.size() == len) return true;
@@ -469,6 +476,7 @@ bool HlsDownloader::DecryptSegment(std::vector<uint8_t>& data, uint64_t seq) {
 #if defined(_WIN32)
     if (data.empty()) return true;
     if (data.size() % 16 != 0) return false;   // CBC requires full blocks
+    if (key_bytes_.size() != 16) return false;
 
     // IV: explicit EXT-X-KEY IV, else the segment's media sequence number as
     // a 128-bit big-endian integer (RFC 8216 §5.2).
@@ -480,30 +488,55 @@ bool HlsDownloader::DecryptSegment(std::vector<uint8_t>& data, uint64_t seq) {
             iv[8 + i] = static_cast<uint8_t>((seq >> ((7 - i) * 8)) & 0xFF);
     }
 
-    BCRYPT_ALG_HANDLE hAlg = nullptr;
-    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0)
-        return false;
-    bool ok = false;
-    if (BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
-                          reinterpret_cast<PUCHAR>(BCRYPT_CHAIN_MODE_CBC),
-                          sizeof(BCRYPT_CHAIN_MODE_CBC), 0) == 0) {
-        BCRYPT_KEY_HANDLE hKey = nullptr;
-        if (BCryptGenerateSymmetricKey(hAlg, &hKey, nullptr, 0,
-                                       key_bytes_.data(), 16, 0) == 0) {
-            ULONG out_len = 0;
-            // HLS uses PKCS7 padding; BCrypt validates + strips it.
-            if (BCryptDecrypt(hKey, data.data(), static_cast<ULONG>(data.size()),
-                              nullptr, iv, 16, data.data(),
-                              static_cast<ULONG>(data.size()), &out_len,
-                              BCRYPT_BLOCK_PADDING) == 0) {
-                data.resize(out_len);
-                ok = true;
-            }
-            BCryptDestroyKey(hKey);
+    // Per-thread cached BCrypt AES-CBC provider and symmetric key handle so a
+    // 2,000-segment playlist does not open/configure/close CNG on every segment.
+    struct TlsAesCache {
+        BCRYPT_ALG_HANDLE    hAlg = nullptr;
+        BCRYPT_KEY_HANDLE    hKey = nullptr;
+        std::vector<uint8_t> key_bytes;
+        ~TlsAesCache() {
+            if (hKey) BCryptDestroyKey(hKey);
+            if (hAlg) BCryptCloseAlgorithmProvider(hAlg, 0);
         }
-    }
-    BCryptCloseAlgorithmProvider(hAlg, 0);
-    return ok;
+        bool EnsureKey(const std::vector<uint8_t>& want) {
+            if (hKey && key_bytes == want) return true;
+            if (hKey) { BCryptDestroyKey(hKey); hKey = nullptr; }
+            if (!hAlg) {
+                if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM,
+                                                nullptr, 0) != 0) {
+                    hAlg = nullptr;
+                    return false;
+                }
+                if (BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
+                                      reinterpret_cast<PUCHAR>(BCRYPT_CHAIN_MODE_CBC),
+                                      sizeof(BCRYPT_CHAIN_MODE_CBC), 0) != 0) {
+                    BCryptCloseAlgorithmProvider(hAlg, 0);
+                    hAlg = nullptr;
+                    return false;
+                }
+            }
+            if (BCryptGenerateSymmetricKey(hAlg, &hKey, nullptr, 0,
+                                           const_cast<PUCHAR>(want.data()),
+                                           static_cast<ULONG>(want.size()), 0) != 0) {
+                hKey = nullptr;
+                return false;
+            }
+            key_bytes = want;
+            return true;
+        }
+    };
+    thread_local TlsAesCache tls_aes;
+    if (!tls_aes.EnsureKey(key_bytes_)) return false;
+
+    ULONG out_len = 0;
+    // HLS uses PKCS7 padding; BCrypt validates + strips it.
+    if (BCryptDecrypt(tls_aes.hKey, data.data(), static_cast<ULONG>(data.size()),
+                      nullptr, iv, 16, data.data(),
+                      static_cast<ULONG>(data.size()), &out_len,
+                      BCRYPT_BLOCK_PADDING) != 0)
+        return false;
+    data.resize(out_len);
+    return true;
 #else
     (void)data; (void)seq;
     return false;   // HLS AES is wired for BCrypt (Windows-only build)
@@ -846,16 +879,22 @@ bool HlsDownloader::RunParsedTrack(const fs::path& track_file) {
 
 void HlsDownloader::Worker(int worker_index) {
     active_workers_++;
+    // Reuse one easy handle and one segment buffer per worker so TCP/TLS
+    // connections stay alive across segments instead of re-handshaking on each.
+    CURL* curl = curl_easy_init();
+    if (curl) ApplyTlsPolicy(curl);
+    std::vector<uint8_t> data;
+    data.reserve(256 * 1024);
+
     for (;;) {
         if (stop_requested_ || abort_) break;
         const uint64_t idx = next_seg_++;
         if (idx >= segments_.size()) break;
         if (completed_[idx]) { segs_done_++; continue; }   // resume: skip
 
-        std::vector<uint8_t> data;
         const Segment& seg = segments_[idx];
         if (!FetchSegment(seg.url, data, worker_index,
-                          seg.ranged, seg.off, seg.len)) {
+                          seg.ranged, seg.off, seg.len, curl)) {
             if (!stop_requested_)
                 Fail("Failed to download segment: " + seg.url);
             break;
@@ -879,6 +918,7 @@ void HlsDownloader::Worker(int worker_index) {
         bytes_done_ += data.size();
         if ((++segs_done_) % 8 == 0) SaveMeta();
     }
+    if (curl) curl_easy_cleanup(curl);
     active_workers_--;
 }
 

@@ -379,6 +379,10 @@ void BridgeServer::Stop() {
         listen_sock_ = static_cast<uintptr_t>(~0ull);
     }
     if (thread_.joinable()) thread_.join();
+    for (auto& slot : client_slots_) {
+        if (slot->th.joinable()) slot->th.join();
+    }
+    client_slots_.clear();
     if (wsa_started_) { WSACleanup(); wsa_started_ = false; }
 #endif
 }
@@ -392,14 +396,39 @@ void BridgeServer::ListenLoop() {
             if (!running_.load()) break;      // socket closed by Stop()
             continue;                          // transient error, keep listening
         }
-        // Never let a stalled client jam the listener.
+        // Never let a stalled client jam a worker.
         DWORD tv = 5000;   // 5s recv/send timeout
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO,
                    reinterpret_cast<const char*>(&tv), sizeof(tv));
         setsockopt(c, SOL_SOCKET, SO_SNDTIMEO,
                    reinterpret_cast<const char*>(&tv), sizeof(tv));
-        HandleClient(static_cast<uintptr_t>(c));
-        closesocket(c);
+
+        // Reap finished client workers.
+        for (auto it = client_slots_.begin(); it != client_slots_.end();) {
+            if ((*it)->done.load(std::memory_order_acquire)) {
+                if ((*it)->th.joinable()) (*it)->th.join();
+                it = client_slots_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // Cap concurrency at 8 simultaneous connections so a burst of requests
+        // cannot spawn unbounded threads while /ytformats still runs off the
+        // accept loop and never blocks /ping or /add.
+        if (client_slots_.size() >= 8) {
+            if (client_slots_.front()->th.joinable())
+                client_slots_.front()->th.join();
+            client_slots_.erase(client_slots_.begin());
+        }
+
+        auto slot = std::make_unique<ClientSlot>();
+        ClientSlot* raw_slot = slot.get();
+        slot->th = std::thread([this, c, raw_slot] {
+            HandleClient(static_cast<uintptr_t>(c));
+            closesocket(c);
+            raw_slot->done.store(true, std::memory_order_release);
+        });
+        client_slots_.push_back(std::move(slot));
     }
 #endif
 }
@@ -450,14 +479,16 @@ static bool ReadRequest(SOCKET s, HttpRequest& req) {
     raw.reserve(4096);
     char buf[4096];
 
-    // 1) Read until end of headers.
-    while (raw.find("\r\n\r\n") == std::string::npos) {
+    // 1) Read until end of headers, scanning only the newly arrived window.
+    size_t hdr_end = std::string::npos;
+    while (hdr_end == std::string::npos) {
         if (raw.size() > kMaxHeaderBytes) return false;
         int n = recv(s, buf, sizeof(buf), 0);
         if (n <= 0) return false;
+        const size_t scan_from = raw.size() > 3 ? raw.size() - 3 : 0;
         raw.append(buf, static_cast<size_t>(n));
+        hdr_end = raw.find("\r\n\r\n", scan_from);
     }
-    size_t hdr_end = raw.find("\r\n\r\n");
     std::string head = raw.substr(0, hdr_end);
     std::string body = raw.substr(hdr_end + 4);
 
