@@ -128,6 +128,11 @@
   try {
     chrome.storage.local.get({ videoPanelEnabled: true }, d => {
       captureEnabled = !!d.videoPanelEnabled;
+      // The read is async and defaults to ON: a play/hover landing in that
+      // window opens the panel while the toggle is actually OFF. Nothing
+      // else ever hides it (mousemove early-returns once disabled, and
+      // scheduleHide keeps it while the video plays), so reconcile here.
+      if (!captureEnabled) hide();
     });
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes.videoPanelEnabled) {

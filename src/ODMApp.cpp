@@ -227,31 +227,80 @@ static DWORD   g_tray_tid     = 0;        // tray thread id (for WM_QUIT)
 static std::atomic<bool> g_tray_added{false};
 static std::atomic<bool> g_real_quit{false};    // set when the user chooses "Quit"
 
+// Load the embedded application icon (resource ID 1 in app.rc) at an exact
+// pixel size. Prefers Comctl32's LoadIconWithScaleDown (WIC high-quality
+// interpolation when a custom DPI sits between embedded frames) and falls back
+// to LoadImageW (which picks the matching frame from our 14-frame .ico).
+static HICON LoadAppIconAtSize(int px) {
+    if (px <= 0) px = 16;
+    HMODULE hMod = GetModuleHandleW(nullptr);
+    using LoadIconWithScaleDownFn =
+        HRESULT (WINAPI*)(HINSTANCE, PCWSTR, int, int, HICON*);
+    static LoadIconWithScaleDownFn pLoadIconWithScaleDown = []() {
+        HMODULE hComCtl = LoadLibraryW(L"comctl32.dll");
+        return hComCtl ? reinterpret_cast<LoadIconWithScaleDownFn>(
+                             GetProcAddress(hComCtl, "LoadIconWithScaleDown"))
+                       : nullptr;
+    }();
+    HICON hIcon = nullptr;
+    if (pLoadIconWithScaleDown &&
+        SUCCEEDED(pLoadIconWithScaleDown(hMod, MAKEINTRESOURCEW(1), px, px, &hIcon)) &&
+        hIcon) {
+        return hIcon;
+    }
+    return reinterpret_cast<HICON>(LoadImageW(
+        hMod, MAKEINTRESOURCEW(1), IMAGE_ICON, px, px, LR_DEFAULTCOLOR));
+}
+
+static void ApplyWindowIconsForDpi(HWND hwnd, UINT dpi) {
+    if (!hwnd) return;
+    if (!dpi) {
+        if (UINT wDpi = GetDpiForWindow(hwnd)) dpi = wDpi;
+        else dpi = 96;
+    }
+    int smallPx = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+    int bigPx   = GetSystemMetricsForDpi(SM_CXICON, dpi);
+    if (smallPx <= 0) smallPx = GetSystemMetrics(SM_CXSMICON);
+    if (bigPx   <= 0) bigPx   = GetSystemMetrics(SM_CXICON);
+
+    HICON hIconSmall = LoadAppIconAtSize(smallPx);
+    HICON hIconBig   = LoadAppIconAtSize(bigPx);
+    if (hIconSmall) {
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSmall));
+        SetClassLongPtrW(hwnd, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(hIconSmall));
+    }
+    if (hIconBig) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+        SetClassLongPtrW(hwnd, GCLP_HICON, reinterpret_cast<LONG_PTR>(hIconBig));
+    }
+}
+
 static void AddTrayIcon(HWND owner) {
     if (g_tray_added) return;
 
-    // Reuse the main window's icon (set via WM_SETICON at startup); fall back
-    // to loading directly from the embedded resource, then the Windows default.
-    // NOTE: this runs on the tray thread, so never use a bare SendMessage to
-    // the main window — a busy main thread would wedge the tray (and Windows
-    // would show the "not responding" busy cursor over the tray icon).
-    // SendMessageTimeout with SMTO_ABORTIFHUNG keeps us responsive.
-    HICON icon = nullptr;
-    DWORD_PTR iconRes = 0;
-    if (SendMessageTimeoutW(g_main_hwnd, WM_GETICON, ICON_SMALL, 0,
-                            SMTO_ABORTIFHUNG, 150, &iconRes) && iconRes)
-        icon = reinterpret_cast<HICON>(iconRes);
+    // Load the tray icon directly at the system/taskbar small-icon metric for
+    // this Per-Monitor-Aware thread so Explorer never bitmap-stretches a 16px
+    // icon onto a 125%/150% DPI notification area.
+    UINT trayDpi = 96;
+    using GetDpiForSystemFn = UINT (WINAPI*)();
+    static GetDpiForSystemFn pGetDpiForSystem =
+        reinterpret_cast<GetDpiForSystemFn>(GetProcAddress(
+            GetModuleHandleW(L"user32.dll"), "GetDpiForSystem"));
+    if (pGetDpiForSystem) {
+        if (UINT d = pGetDpiForSystem()) trayDpi = d;
+    }
+    int trayPx = GetSystemMetricsForDpi(SM_CXSMICON, trayDpi);
+    if (trayPx <= 0) trayPx = GetSystemMetrics(SM_CXSMICON);
+
+    HICON icon = LoadAppIconAtSize(trayPx);
+    if (!icon) {
+        DWORD_PTR iconRes = 0;
+        if (SendMessageTimeoutW(g_main_hwnd, WM_GETICON, ICON_SMALL, 0,
+                                SMTO_ABORTIFHUNG, 150, &iconRes) && iconRes)
+            icon = reinterpret_cast<HICON>(iconRes);
+    }
     if (!icon)
         icon = reinterpret_cast<HICON>(GetClassLongPtrW(g_main_hwnd, GCLP_HICONSM));
-    iconRes = 0;
-    if (!icon && SendMessageTimeoutW(g_main_hwnd, WM_GETICON, ICON_BIG, 0,
-                                     SMTO_ABORTIFHUNG, 150, &iconRes) && iconRes)
-        icon = reinterpret_cast<HICON>(iconRes);
-    if (!icon)
-        icon = reinterpret_cast<HICON>(LoadImageW(
-            GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
-            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
-            LR_DEFAULTCOLOR));
     if (!icon)
         icon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
 
@@ -833,6 +882,9 @@ static LRESULT CALLBACK ODMWndProc(HWND hwnd, UINT msg,
         ShowWindow(hwnd, SW_HIDE);
         return 0;
     }
+    if (msg == WM_DPICHANGED) {
+        ApplyWindowIconsForDpi(hwnd, HIWORD(wParam));
+    }
     return CallWindowProcW(g_orig_wndproc, hwnd, msg, wParam, lParam);
 }
 #endif // _WIN32
@@ -897,21 +949,14 @@ ODMApp::ODMApp() {
         HBRUSH old = (HBRUSH)SetClassLongPtr(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)bg);
         if (old) DeleteObject(old);
 
-        // Load and apply the app icon from the embedded resource (icon.ico,
-        // resource ID 1 in app.rc). Ultralight's window class has no icon of
-        // its own, so without this the title bar, Alt+Tab, and system tray
-        // all show the generic Windows default icon.
-        HMODULE hMod = GetModuleHandleW(nullptr);
-        HICON hIconSmall = reinterpret_cast<HICON>(LoadImageW(
-            hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
-            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
-            LR_DEFAULTCOLOR));
-        HICON hIconBig = reinterpret_cast<HICON>(LoadImageW(
-            hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
-            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
-            LR_DEFAULTCOLOR));
-        if (hIconSmall) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
-        if (hIconBig)   SendMessageW(hwnd, WM_SETICON, ICON_BIG,   (LPARAM)hIconBig);
+        // Load and apply the app icon from the embedded resource
+        // (icons/odm.ico, resource ID 1 in app.rc). Ultralight's window
+        // class has no icon of its own, so without this the title bar,
+        // Alt+Tab, and system tray all show the generic Windows default
+        // icon. The file holds frames from 16 through 256; the size has to
+        // be this window's DPI, because a 32px bitmap enlarged by the shell
+        // is what made the icon look blocky.
+        ApplyWindowIconsForDpi(hwnd, 0);
 
         // Minimize-to-tray: subclass the window so the title-bar (X) hides the
         // window to the system tray instead of quitting.

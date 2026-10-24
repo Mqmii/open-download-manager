@@ -745,6 +745,13 @@ function notifyTabMedia(tabId) {
 }
 
 // --- The observer ----------------------------------------------------------
+// NOTE: non-blocking observer, but MUST register with 'extraHeaders'.
+// Without it Chrome hides "restricted" response headers (including
+// Access-Control-Allow-Origin) from webRequest listeners and drops them on
+// cache-served subresources, which breaks crossorigin-loaded scripts (e.g.
+// Kick's CDN chunks -> CORS policy errors). 'webRequestBlocking' is only
+// granted to policy-installed extensions in MV3, so a blocking listener is
+// not an option here.
 chrome.webRequest.onHeadersReceived.addListener(
   details => {
     if (details.tabId < 0) return;          // not a real tab (worker/prerender)
@@ -788,7 +795,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     // main_frame/sub_frame: direct media documents (tab/iframe pointing at a file)
     types: ['media', 'xmlhttprequest', 'other', 'main_frame', 'sub_frame']
   },
-  ['responseHeaders']
+  ['responseHeaders', 'extraHeaders']
 );
 
 // --- Content-script / popup messaging --------------------------------------

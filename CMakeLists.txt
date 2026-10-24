@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15.0)
 
 project(ODM
         LANGUAGES C CXX
-        VERSION 0.3.1)
+        VERSION 0.3.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,11 +65,15 @@ add_app(${APP_NAME}
 )
 
 # Embed the application icon into the Windows executable's resource section.
-if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico")
+# icons/odm.ico holds the real 16–256 frames. A lone 32px image is what
+# Explorer and the taskbar enlarge, which is why the icon looked blocky.
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons/odm.ico")
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/app.rc.in"
         "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
         @ONLY)
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/app.rc"
+        PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/odm.ico")
     target_sources(${APP_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 endif()
 
