@@ -31,19 +31,68 @@ const PING_ALARM = 'odm-ping';
 let token = null;
 let connected = false;
 let captureEnabled = true;
+let disabledCaptureSites = [];
+let disabledVideoSites = [];
+
+function siteHost(urlOrHost) {
+  if (!urlOrHost) return '';
+  const s = String(urlOrHost).trim();
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+      const u = new URL(s);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+      return u.hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+    }
+  } catch (e) {
+    return '';
+  }
+  return s.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+}
+
+function isSiteDisabled(urlOrHost, list) {
+  if (!Array.isArray(list) || !list.length) return false;
+  const host = siteHost(urlOrHost);
+  if (!host) return false;
+  for (const raw of list) {
+    const d = siteHost(raw);
+    if (d && (host === d || host.endsWith('.' + d))) return true;
+  }
+  return false;
+}
+
+function isCaptureAllowedFor(urls) {
+  if (!captureEnabled) return false;
+  if (!disabledCaptureSites.length) return true;
+  for (const u of urls) {
+    if (u && isSiteDisabled(u, disabledCaptureSites)) return false;
+  }
+  return true;
+}
 
 async function loadState() {
   const data = await chrome.storage.local.get({
     odmToken: null,
-    captureEnabled: true
+    captureEnabled: true,
+    disabledCaptureSites: [],
+    disabledVideoSites: []
   });
   token = data.odmToken;
   captureEnabled = !!data.captureEnabled;
+  disabledCaptureSites = Array.isArray(data.disabledCaptureSites) ? data.disabledCaptureSites : [];
+  disabledVideoSites = Array.isArray(data.disabledVideoSites) ? data.disabledVideoSites : [];
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.captureEnabled) captureEnabled = !!changes.captureEnabled.newValue;
+  if (changes.disabledCaptureSites) {
+    disabledCaptureSites = Array.isArray(changes.disabledCaptureSites.newValue)
+      ? changes.disabledCaptureSites.newValue : [];
+  }
+  if (changes.disabledVideoSites) {
+    disabledVideoSites = Array.isArray(changes.disabledVideoSites.newValue)
+      ? changes.disabledVideoSites.newValue : [];
+  }
   if (changes.odmToken)       token = changes.odmToken.newValue;
 });
 
@@ -126,12 +175,19 @@ chrome.downloads.onDeterminingFilename.addListener((item /*, suggest */) => {
   if (item.byExtId === chrome.runtime.id) return;   // loop prevention
   const url = item.finalUrl || item.url || '';
   if (!/^https?:\/\//i.test(url)) return;           // skip blob:, data:, file:
+  if (!isCaptureAllowedFor([item.referrer, item.url, item.finalUrl])) return;
   // We never call suggest(): we either cancel (after a successful hand-off)
   // or leave Chrome's download completely untouched.
   takeOver(item, url);
 });
 
 async function takeOver(item, url) {
+  if (!item.referrer && disabledCaptureSites.length) {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tab && tab.url && isSiteDisabled(tab.url, disabledCaptureSites)) return;
+    } catch (e) {}
+  }
   const ok = await sendToOdm({
     url,
     filename: baseName(item.filename || '') || filenameFromUrl(url),

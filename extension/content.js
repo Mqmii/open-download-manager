@@ -112,7 +112,9 @@
   }
   askProbe();
 
-  // Driven by the popup's "Capture videos" switch (videoPanelEnabled).
+  // Driven by the popup's "Video download panel" switch (global + per-site).
+  let globalVideoEnabled = true;
+  let disabledVideoSites = [];
   let captureEnabled = true;
   let host = null, shadow = null;
   let btnEl = null, listEl = null, barEl = null, lblEl = null;
@@ -124,10 +126,54 @@
   let lastMoveCheck = 0;
   let repositionTimer = 0;
 
+  function siteHost(urlOrHost) {
+    if (!urlOrHost) return '';
+    const s = String(urlOrHost).trim();
+    try {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+        const u = new URL(s);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+        return u.hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+      }
+    } catch (e) {
+      return '';
+    }
+    return s.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+  }
+
+  function isSiteDisabled(urlOrHost, list) {
+    if (!Array.isArray(list) || !list.length) return false;
+    const h = siteHost(urlOrHost);
+    if (!h) return false;
+    for (const raw of list) {
+      const d = siteHost(raw);
+      if (d && (h === d || h.endsWith('.' + d))) return true;
+    }
+    return false;
+  }
+
+  function computePanelEnabled() {
+    if (!globalVideoEnabled) return false;
+    if (!disabledVideoSites.length) return true;
+    if (isSiteDisabled(location.hostname, disabledVideoSites)) return false;
+    if (location.ancestorOrigins) {
+      for (let i = 0; i < location.ancestorOrigins.length; i++) {
+        if (isSiteDisabled(location.ancestorOrigins[i], disabledVideoSites)) return false;
+      }
+    }
+    if (window !== window.top && document.referrer &&
+        isSiteDisabled(document.referrer, disabledVideoSites)) {
+      return false;
+    }
+    return true;
+  }
+
   // ---- settings (same toggle as the popup) --------------------------------
   try {
-    chrome.storage.local.get({ videoPanelEnabled: true }, d => {
-      captureEnabled = !!d.videoPanelEnabled;
+    chrome.storage.local.get({ videoPanelEnabled: true, disabledVideoSites: [] }, d => {
+      globalVideoEnabled = !!d.videoPanelEnabled;
+      disabledVideoSites = Array.isArray(d.disabledVideoSites) ? d.disabledVideoSites : [];
+      captureEnabled = computePanelEnabled();
       // The read is async and defaults to ON: a play/hover landing in that
       // window opens the panel while the toggle is actually OFF. Nothing
       // else ever hides it (mousemove early-returns once disabled, and
@@ -135,8 +181,16 @@
       if (!captureEnabled) hide();
     });
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.videoPanelEnabled) {
-        captureEnabled = !!changes.videoPanelEnabled.newValue;
+      if (area !== 'local') return;
+      if (changes.videoPanelEnabled) {
+        globalVideoEnabled = !!changes.videoPanelEnabled.newValue;
+      }
+      if (changes.disabledVideoSites) {
+        disabledVideoSites = Array.isArray(changes.disabledVideoSites.newValue)
+          ? changes.disabledVideoSites.newValue : [];
+      }
+      if (changes.videoPanelEnabled || changes.disabledVideoSites) {
+        captureEnabled = computePanelEnabled();
         if (!captureEnabled) hide();
       }
     });

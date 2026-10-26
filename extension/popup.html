@@ -98,6 +98,42 @@
       overflow: hidden;
       margin-bottom: 10px;
     }
+    .scope-bar {
+      display: flex;
+      gap: 4px;
+      padding: 6px;
+      background: rgba(0, 0, 0, 0.18);
+      border-bottom: 1px solid var(--line);
+    }
+    .scope-btn {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: background .15s, color .15s;
+    }
+    .scope-btn:hover:not(:disabled) {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .scope-btn.active {
+      color: #fff;
+      background: var(--accent);
+    }
+    .scope-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
     .row {
       display: flex;
       align-items: center;
@@ -189,10 +225,19 @@
   </div>
 
   <div class="group">
+    <div class="scope-bar">
+      <button type="button" class="scope-btn active" id="scope-site" title="Toggle for this site only">
+        <span id="scope-site-label">This site</span>
+      </button>
+      <button type="button" class="scope-btn" id="scope-global" title="Toggle for all sites">
+        All sites
+      </button>
+    </div>
+
     <div class="row">
       <span class="row-text">
         <label class="row-title" for="capture-toggle">Capture downloads</label>
-        <span class="row-desc">Browser downloads are handed to ODM instead.</span>
+        <span class="row-desc" id="capture-desc">Browser downloads are handed to ODM instead.</span>
       </span>
       <span class="switch">
         <input type="checkbox" id="capture-toggle" />
@@ -203,7 +248,7 @@
     <div class="row">
       <span class="row-text">
         <label class="row-title" for="video-toggle">Video download panel</label>
-        <span class="row-desc">Shows a Download button over videos you hover.</span>
+        <span class="row-desc" id="video-desc">Shows a Download button over videos you hover.</span>
       </span>
       <span class="switch">
         <input type="checkbox" id="video-toggle" />
