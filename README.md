@@ -206,6 +206,7 @@ src/
   YtDlp.{h,cpp}         yt-dlp wrapper: page URL -> direct media URLs
   YtDlpDownloader.{h,cpp} fallback engine for videos with no plain media URL
   Muxer.{h,cpp}         libavformat stream-copy remux into one .mp4
+  Checksum.{h,cpp}      MD5, SHA-1, SHA-256, and SHA-512 verification (Windows CNG)
   BridgeServer.{h,cpp}  loopback HTTP bridge (WinSock)
 assets/                 the interface: index.html, app.css, app.js
 extension/              Chrome extension (Manifest V3)
@@ -227,14 +228,14 @@ is exposed to it as a handful of JavaScript functions.
 - [x] Identity-based capture on MSE players
 - [x] YouTube support (yt-dlp resolves, ODM downloads)
 - [x] Download queue — jobs wait their turn instead of interrupting each other
-- [ ] Several simultaneous jobs (the engine still runs one at a time)
-- [ ] Pause per job, not just a global stop
+- [x] Several simultaneous jobs
+- [x] Pause per job, not just a global stop
 - [ ] DASH manifest (`.mpd`) engine
 - [ ] Long VODs (Twitch / Kick): streaming concat so a 30 GB recording does not
       need twice its size in free space, and playlist refresh for URLs that
       expire mid-download
 - [ ] Scheduler and category rules
-- [ ] Checksum verification
+- [x] Checksum verification
 
 ---
 

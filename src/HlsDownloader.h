@@ -121,8 +121,8 @@ private:
     void Fail(const std::string& msg);
     void Finish();
 
-    int      part_count_ = 4;
-    uint64_t speed_limit_ = 0;
+    int                   part_count_ = 4;
+    std::atomic<uint64_t> speed_limit_{0};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};

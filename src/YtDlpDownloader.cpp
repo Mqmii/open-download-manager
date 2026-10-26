@@ -110,7 +110,7 @@ bool YtDlpDownloader::FetchTrack(const std::string& page_url,
     };
     if (speed_limit_ > 0) {
         args.push_back("-r");
-        args.push_back(std::to_string(speed_limit_));
+        args.push_back(std::to_string(speed_limit_.load()));
     }
     args.push_back(page_url);
 

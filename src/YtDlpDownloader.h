@@ -100,7 +100,7 @@ private:
     std::atomic<bool> cancelled_{false};
     std::thread       thread_;
 
-    uint64_t speed_limit_ = 0;
+    std::atomic<uint64_t> speed_limit_{0};
     int      max_height_ = 0;
 };
 

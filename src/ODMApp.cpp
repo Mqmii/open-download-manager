@@ -5,6 +5,7 @@
 
 #include "ODMApp.h"
 
+#include "Checksum.h"
 #include "UpdateCheck.h"
 #include "YtDlp.h"
 
@@ -979,65 +980,6 @@ ODMApp::ODMApp() {
     overlay_->view()->set_view_listener(this);
     overlay_->view()->set_load_listener(this);
 
-    // Bind engine callbacks.
-    downloader_.SetPartCount(8);
-    downloader_.SetProgressCallback(
-        [this](const ProgressInfo& p) { OnProgress(p); });
-    downloader_.SetCompletionCallback(
-        [this](const DownloadResult& r) { OnComplete(r); });
-    // When the engine finalizes the output path (e.g. after appending a
-    // server-suggested extension), tell the UI so it can persist the real
-    // path for a later resume.
-    downloader_.SetPathResolvedCallback(
-        [this](const std::string& id, const std::string& path) {
-            std::ostringstream js;
-            js << "if (window.UI && UI.onPath) UI.onPath('"
-               << EscapeJS(id) << "', '" << EscapeJS(path) << "');";
-            PostJS(js.str());
-        });
-    // HLS engine: identical callback surface, HLS-specific part count.
-    hls_.SetPartCount(4);
-    hls_.SetProgressCallback(
-        [this](const ProgressInfo& p) { OnProgress(p); });
-    hls_.SetCompletionCallback(
-        [this](const DownloadResult& r) { OnComplete(r); });
-    hls_.SetPathResolvedCallback(
-        [this](const std::string& id, const std::string& path) {
-            std::ostringstream js;
-            js << "if (window.UI && UI.onPath) UI.onPath('"
-               << EscapeJS(id) << "', '" << EscapeJS(path) << "');";
-            PostJS(js.str());
-        });
-
-
-    // Paired-track DASH: same callback surface, same part count as plain HTTP
-    // (both tracks are ordinary Range-capable files).
-    dash_.SetPartCount(8);
-    dash_.SetProgressCallback(
-        [this](const ProgressInfo& p) { OnProgress(p); });
-    dash_.SetCompletionCallback(
-        [this](const DownloadResult& r) { OnComplete(r); });
-    dash_.SetPathResolvedCallback(
-        [this](const std::string& id, const std::string& path) {
-            std::ostringstream js;
-            js << "if (window.UI && UI.onPath) UI.onPath('"
-               << EscapeJS(id) << "', '" << EscapeJS(path) << "');";
-            PostJS(js.str());
-        });
-
-    // YouTube fallback engine: single-connection, but the same callbacks, so
-    // the UI cannot tell which engine is behind a row.
-    ytdlp_.SetProgressCallback(
-        [this](const ProgressInfo& p) { OnProgress(p); });
-    ytdlp_.SetCompletionCallback(
-        [this](const DownloadResult& r) { OnComplete(r); });
-    ytdlp_.SetPathResolvedCallback(
-        [this](const std::string& id, const std::string& path) {
-            std::ostringstream js;
-            js << "if (window.UI && UI.onPath) UI.onPath('"
-               << EscapeJS(id) << "', '" << EscapeJS(path) << "');";
-            PostJS(js.str());
-        });
     // An out-of-date yt-dlp is the one thing that reliably breaks YouTube
     // support months after a release. Checked at most weekly, off-thread,
     // and silent either way — nothing here depends on it succeeding.
@@ -1100,14 +1042,14 @@ void ODMApp::OnClose(ultralight::Window*) {
 #endif
     // Stop the bridge first so no new hand-offs arrive while we tear down.
     bridge_.Stop();
-    downloader_.Stop();
-    hls_.Stop();
-    dash_.Stop();
-    ytdlp_.Stop();
-    downloader_.WaitForCompletion();
-    hls_.WaitForCompletion();
-    dash_.WaitForCompletion();
-    ytdlp_.WaitForCompletion();
+    for (auto& kv : jobs_) {
+        kv.second->suppress_callbacks.store(true);
+        kv.second->Stop();
+    }
+    for (auto& kv : jobs_) {
+        kv.second->WaitForCompletion();
+    }
+    jobs_.clear();
     // Last: the engines above are joined, but the detached probe / MediaInfo /
     // resolver / "Open with" workers are not and may still be running. Closing
     // the mailbox makes whatever they post from here on a no-op, so none of
@@ -1191,14 +1133,24 @@ void ODMApp::OnUpdate() {
         local.swap(mail_->js);
     }
     if (!overlay_ || !overlay_->view() || local.empty()) return;
+    // Coalesce consecutive UI.onProgress calls only when they belong to the
+    // SAME download id: with simultaneous jobs, dropping a progress call just
+    // because the next item is also UI.onProgress would starve one job's row
+    // whenever another job ticks right after it.
+    auto progress_key = [](const std::string& s) -> std::string {
+        if (s.rfind("UI.onProgress('", 0) != 0) return {};
+        const size_t comma = s.find("',");
+        return comma == std::string::npos ? std::string() : s.substr(0, comma + 2);
+    };
     std::string batch;
     while (!local.empty()) {
         std::string cur = std::move(local.front());
         local.pop();
-        if (!local.empty() &&
-            cur.rfind("UI.onProgress(", 0) == 0 &&
-            local.front().rfind("UI.onProgress(", 0) == 0) {
-            continue;
+        if (!local.empty()) {
+            const std::string key = progress_key(cur);
+            if (!key.empty() && key == progress_key(local.front())) {
+                continue;
+            }
         }
         if (!batch.empty()) batch += '\n';
         batch += cur;
@@ -1249,6 +1201,8 @@ void ODMApp::OnDOMReady(ultralight::View* caller,
         BindJSCallback(&ODMApp::JS_ProbeUrl);
     global["GetPartInfo"] =
         BindJSCallbackWithRetval(&ODMApp::JS_GetPartInfo);
+    global["VerifyChecksum"] =
+        BindJSCallback(&ODMApp::JS_VerifyChecksum);
     global["OpenReleasesPage"] =
         BindJSCallbackWithRetval(&ODMApp::JS_OpenReleasesPage);
 
@@ -1273,13 +1227,25 @@ void ODMApp::OnDOMReady(ultralight::View* caller,
 
 // --- JavaScript entry points ----------------------------------------------
 
+void ODMApp::UpdateActiveSpeedLimits() {
+    size_t active = 0;
+    for (const auto& kv : jobs_) {
+        if (kv.second->IsRunning()) ++active;
+    }
+    const uint64_t per_job = (speed_limit_ > 0 && active > 0)
+        ? std::max<uint64_t>(speed_limit_ / active, 4096)
+        : speed_limit_;
+    for (const auto& kv : jobs_) {
+        const auto& s = kv.second;
+        if (s->downloader) s->downloader->SetSpeedLimit(per_job);
+        if (s->hls)        s->hls->SetSpeedLimit(per_job);
+        if (s->dash)       s->dash->SetSpeedLimit(per_job);
+        if (s->ytdlp)      s->ytdlp->SetSpeedLimit(per_job);
+    }
+}
+
 void ODMApp::JS_StartDownload(const ultralight::JSObject&,
                               const ultralight::JSArgs& args) {
-    if (downloader_.IsRunning() || hls_.IsRunning() || dash_.IsRunning() ||
-        ytdlp_.IsRunning()) {
-        PostJS("UI.onStatus('A download is already running.');");
-        return;
-    }
     if (args.size() < 1 || !args[0].IsString()) {
         PostJS("UI.onStatus('Please paste a download link first.');");
         return;
@@ -1295,6 +1261,26 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
     std::string id;
     if (args.size() >= 3 && args[2].IsString())
         id = ToStdStr(args[2].ToString());
+
+    // Reap any finished slots from earlier runs before starting a new one.
+    for (auto it = jobs_.begin(); it != jobs_.end(); ) {
+        if (it->first != id && !it->second->IsRunning()) {
+            it->second->WaitForCompletion();
+            it = jobs_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // If this exact id has a prior slot (e.g. a paused job being resumed while
+    // its worker threads are still winding down), silence its stale callbacks
+    // and wait for its file handles and sidecar to close before reopening.
+    if (auto existing = jobs_.find(id); existing != jobs_.end()) {
+        existing->second->suppress_callbacks.store(true);
+        existing->second->Stop();
+        existing->second->WaitForCompletion();
+        jobs_.erase(existing);
+    }
 
     // args[3] (optional) is a one-shot request-context JSON captured by the
     // browser extension: {filename?, referrer?, cookies?, userAgent?,
@@ -1335,24 +1321,32 @@ void ODMApp::JS_StartDownload(const ultralight::JSObject&,
         }
     }
 
+    auto slot = std::make_shared<JobSlot>();
+    slot->id = id;
+    jobs_[id] = slot;
+
     // A watch page is not a file: there is nothing to name, size or fetch
     // until yt-dlp has told us what the page actually holds. That answer
     // comes back on a worker thread and re-enters at BeginDownload.
     if (job_type == "ytdlp" ||
         (job_type.empty() && ytdlp::IsSupportedUrl(url))) {
-        StartYouTubeDownload(url, out_path, id, suggested_name, max_height);
+        StartYouTubeDownload(slot, url, out_path, id, suggested_name, max_height);
         return;
     }
 
-    BeginDownload(std::move(url), std::move(out_path), std::move(id),
-                  std::move(req_ctx), std::move(suggested_name),
-                  std::move(job_type), std::move(audio_url));
+    BeginDownload(std::move(slot), std::move(url), std::move(out_path),
+                  std::move(id), std::move(req_ctx), std::move(suggested_name),
+                  std::move(job_type), std::move(audio_url), max_height);
 }
 
-void ODMApp::BeginDownload(std::string url, std::string out_path,
+void ODMApp::BeginDownload(std::shared_ptr<JobSlot> slot,
+                           std::string url, std::string out_path,
                            std::string id, RequestContext req_ctx,
                            std::string suggested_name, std::string job_type,
-                           std::string audio_url, std::string resume_key) {
+                           std::string audio_url, int max_height,
+                           std::string resume_key) {
+    if (!slot || slot->suppress_callbacks.load()) return;
+
     // Derive a safe filename from the URL (used when the caller gave no path,
     // or only a directory). A browser-suggested filename wins when present.
     auto name_from_url = [&url]() -> std::string {
@@ -1395,10 +1389,41 @@ void ODMApp::BeginDownload(std::string url, std::string out_path,
     // "Cannot open output file" for a not-yet-created parent folder.
     fs::create_directories(fs::path(out_path).parent_path(), ec);
 
-    // Never silently overwrite a finished file with the same name: fresh
-    // jobs get "name (1).ext"; resume sidecars keep the original path.
+    // Never silently overwrite a finished file OR another active job's target
+    // with the same name: fresh jobs get "name (1).ext"; resume sidecars keep
+    // the original path.
     {
+        auto taken_by_other = [&](const std::string& cand) {
+            std::string low = cand;
+            std::transform(low.begin(), low.end(), low.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            for (const auto& kv : jobs_) {
+                if (kv.first == id || kv.second->out_path.empty()) continue;
+                std::string other = kv.second->out_path;
+                std::transform(other.begin(), other.end(), other.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (other == low) return true;
+            }
+            return false;
+        };
+
         out_path = UniquifyPath(out_path);
+        if (taken_by_other(out_path)) {
+            const fs::path p(out_path);
+            const std::string stem = p.stem().string();
+            const std::string ext  = p.extension().string();
+            const fs::path    dir  = p.parent_path();
+            for (int i = 1; i < 1000; ++i) {
+                std::string cand = UniquifyPath(
+                    (dir / (stem + " (" + std::to_string(i) + ")" + ext)).string());
+                if (!taken_by_other(cand)) {
+                    out_path = std::move(cand);
+                    break;
+                }
+            }
+        }
+        slot->out_path = out_path;
+
         // Told unconditionally, not only when the name had to be uniquified:
         // a YouTube row is created before anything about the file is known
         // (the URL's basename is "watch"), so this is the moment the list
@@ -1416,22 +1441,76 @@ void ODMApp::BeginDownload(std::string url, std::string out_path,
         PostJS(js.str());
     }
 
-    // Route by job type: HLS playlists go to the stream engine.
+    // Callbacks capture a weak_ptr to the slot so the worker thread never owns
+    // a strong reference that could drop to zero on its own stack.
+    std::weak_ptr<JobSlot> wslot = slot;
+    auto on_prog = [this, wslot](const ProgressInfo& p) {
+        auto s = wslot.lock();
+        if (!s || s->suppress_callbacks.load()) return;
+        OnProgress(p);
+    };
+    auto on_path = [mail = mail_, wslot](const std::string& jid,
+                                         const std::string& path) {
+        mail->PostTask([mail, wslot, jid, path] {
+            auto s = wslot.lock();
+            if (!s || s->suppress_callbacks.load()) return;
+            s->out_path = path;
+            std::ostringstream js;
+            js << "if (window.UI && UI.onPath) UI.onPath('"
+               << EscapeJS(jid) << "', '" << EscapeJS(path) << "');";
+            mail->PostJS(js.str());
+        });
+    };
+    auto on_done = [this, mail = mail_, wslot](const DownloadResult& r) {
+        mail->PostTask([this, wslot, r] {
+            auto s = wslot.lock();
+            if (!s || s->suppress_callbacks.load()) return;
+            OnComplete(r);
+            s->WaitForCompletion();
+            auto it = jobs_.find(s->id);
+            if (it != jobs_.end() && it->second == s) {
+                jobs_.erase(it);
+            }
+            UpdateActiveSpeedLimits();
+        });
+    };
+
+    // Route by job type: each job gets its own engine instance.
     if (job_type == "hls") {
-        hls_.Start(url, out_path, id, req_ctx);
+        slot->hls = std::make_unique<HlsDownloader>();
+        slot->hls->SetPartCount(std::min(part_count_, 8));
+        slot->hls->SetProgressCallback(on_prog);
+        slot->hls->SetPathResolvedCallback(on_path);
+        slot->hls->SetCompletionCallback(on_done);
+        slot->hls->Start(url, out_path, id, req_ctx);
     } else if (job_type == "dash") {
-        // `url` is the chosen video rung, `audio_url` its audio track; the
-        // engine downloads both and remuxes them into one file.
-        dash_.Start(url, audio_url, out_path, id, req_ctx, resume_key);
+        slot->dash = std::make_unique<DashDownloader>();
+        slot->dash->SetPartCount(part_count_);
+        slot->dash->SetProgressCallback(on_prog);
+        slot->dash->SetPathResolvedCallback(on_path);
+        slot->dash->SetCompletionCallback(on_done);
+        slot->dash->Start(url, audio_url, out_path, id, req_ctx, resume_key);
     } else if (job_type == "ytdlp-direct") {
-        // No plain media URL exists for this video — yt-dlp fetches it itself.
-        ytdlp_.Start(url, out_path, id);
+        slot->ytdlp = std::make_unique<YtDlpDownloader>();
+        slot->ytdlp->SetMaxHeight(max_height);
+        slot->ytdlp->SetProgressCallback(on_prog);
+        slot->ytdlp->SetPathResolvedCallback(on_path);
+        slot->ytdlp->SetCompletionCallback(on_done);
+        slot->ytdlp->Start(url, out_path, id);
     } else {
-        downloader_.Start(url, out_path, id, req_ctx, resume_key);
+        slot->downloader = std::make_unique<Downloader>();
+        slot->downloader->SetPartCount(part_count_);
+        slot->downloader->SetMultiSegmentThreshold(threshold_);
+        slot->downloader->SetProgressCallback(on_prog);
+        slot->downloader->SetPathResolvedCallback(on_path);
+        slot->downloader->SetCompletionCallback(on_done);
+        slot->downloader->Start(url, out_path, id, req_ctx, resume_key);
     }
+    UpdateActiveSpeedLimits();
 }
 
-void ODMApp::StartYouTubeDownload(const std::string& page_url,
+void ODMApp::StartYouTubeDownload(std::shared_ptr<JobSlot> slot,
+                                  const std::string& page_url,
                                   const std::string& out_path,
                                   const std::string& id,
                                   const std::string& suggested_name,
@@ -1442,6 +1521,7 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
         js << "if (window.UI && UI.onComplete) UI.onComplete('" << EscapeJS(id)
            << "', 'error', '', 'yt-dlp.exe is missing from the ODM folder.');";
         PostJS(js.str());
+        jobs_.erase(id);
         return;
     }
 
@@ -1455,10 +1535,12 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
 
     // Resolving spawns yt-dlp and can take seconds; the mailbox (not `this`)
     // is what the worker carries, so closing the window mid-resolve simply
-    // drops the result. The cancel flag travels the same way, so Stop can
-    // reach into those seconds and yt-dlp dies with them.
-    resolve_cancel_ = std::make_shared<std::atomic<bool>>(false);
-    std::thread([this, mail = mail_, cancel = resolve_cancel_, page,
+    // drops the result. The cancel flag travels on the job's own slot so
+    // stopping this job aborts only its own yt-dlp process.
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    slot->resolve_cancel = cancel;
+    std::weak_ptr<JobSlot> wslot = slot;
+    std::thread([this, mail = mail_, wslot, cancel, page,
                  out_path, id, suggested_name, max_height] {
         ytdlp::MediaInfo info;
         const bool ok = ytdlp::Resolve(page, &info, max_height, cancel.get());
@@ -1467,11 +1549,11 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
         // main-thread only. `this` is safe to capture here because the task
         // only ever runs from OnUpdate, and a closed mailbox never hands it
         // out at all.
-        mail->PostTask([this, cancel, page, out_path, id, suggested_name,
+        mail->PostTask([this, wslot, cancel, page, out_path, id, suggested_name,
                         info, ok, max_height] {
-            // This resolve is over either way; let Stop go back to reporting
-            // that there is nothing to stop.
-            if (resolve_cancel_ == cancel) resolve_cancel_.reset();
+            auto s = wslot.lock();
+            if (!s || s->suppress_callbacks.load()) return;
+            if (s->resolve_cancel == cancel) s->resolve_cancel.reset();
             if (cancel->load()) {
                 // The user pressed Stop while the page was being read. Starting
                 // the download now is the one thing they asked us not to do.
@@ -1479,6 +1561,7 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
                 js << "if (window.UI && UI.onComplete) UI.onComplete('"
                    << EscapeJS(id) << "', 'stopped', '', '');";
                 PostJS(js.str());
+                jobs_.erase(id);
                 return;
             }
             // The page title is the only sensible file name here; the URL
@@ -1508,16 +1591,14 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
                                    ? "Could not read this video."
                                    : info.error) << "');";
                 PostJS(js.str());
+                jobs_.erase(id);
                 return;
             }
             if (!ok || info.video_url.empty()) {
                 // The video is real but has no plain Range-capable URL: hand
-                // the whole job to yt-dlp instead of failing. The quality cap
-                // rides on the engine because BeginDownload routes by type
-                // alone and knows nothing about YouTube.
-                ytdlp_.SetMaxHeight(max_height);
-                BeginDownload(page, out_path, id, RequestContext{}, name,
-                              "ytdlp-direct", "");
+                // the whole job to yt-dlp instead of failing.
+                BeginDownload(s, page, out_path, id, RequestContext{}, name,
+                              "ytdlp-direct", "", max_height);
                 return;
             }
             // The normal case: two ordinary https tracks, downloaded by the
@@ -1536,51 +1617,62 @@ void ODMApp::StartYouTubeDownload(const std::string& page_url,
             // signed and expire, so a later Resume re-resolves this same
             // video into DIFFERENT urls. Hashing those would reject the
             // sidecar every time and restart a paused video from zero.
-            BeginDownload(info.video_url, out_path, id, ctx, name,
+            BeginDownload(s, info.video_url, out_path, id, ctx, name,
                           info.audio_url.empty() ? "" : "dash",
-                          info.audio_url, page);
+                          info.audio_url, max_height, page);
         });
     }).detach();
 }
 
 void ODMApp::JS_StopDownload(const ultralight::JSObject&,
-                             const ultralight::JSArgs&) {
-    // Reading a video page counts as active work even though no engine has
-    // started yet — it is what the user is staring at when they press Stop.
-    if (!downloader_.IsRunning() && !hls_.IsRunning() && !dash_.IsRunning() &&
-        !ytdlp_.IsRunning() && !resolve_cancel_) {
+                             const ultralight::JSArgs& args) {
+    // args[0] (optional): download id for per-job pause/stop. When omitted or
+    // empty, stops every running download ("Stop All").
+    std::string id;
+    if (args.size() >= 1 && args[0].IsString())
+        id = ToStdStr(args[0].ToString());
+
+    if (!id.empty()) {
+        auto it = jobs_.find(id);
+        if (it == jobs_.end() || !it->second->IsRunning()) return;
+        PostJS("UI.onStatus('Download paused.');");
+        it->second->Stop();
+        return;
+    }
+
+    bool any_running = false;
+    for (const auto& kv : jobs_) {
+        if (kv.second->IsRunning()) {
+            any_running = true;
+            kv.second->Stop();
+        }
+    }
+    if (!any_running) {
         PostJS("UI.onStatus('No active download to stop.');");
         return;
     }
-    PostJS("UI.onStatus('Stopping...');");
-    if (resolve_cancel_) resolve_cancel_->store(true);
-    downloader_.Stop();
-    hls_.Stop();
-    dash_.Stop();
-    ytdlp_.Stop();
+    PostJS("UI.onStatus('Stopping all downloads...');");
 }
 
 void ODMApp::JS_ApplySettings(const ultralight::JSObject&,
                               const ultralight::JSArgs& args) {
     if (args.size() >= 1 && args[0].IsNumber())
-        downloader_.SetPartCount(static_cast<int>(args[0].ToNumber()));
+        part_count_ = std::clamp(static_cast<int>(args[0].ToNumber()), 1, 16);
     if (args.size() >= 2 && args[1].IsNumber())
-        downloader_.SetMultiSegmentThreshold(
-            static_cast<uint64_t>(args[1].ToNumber()));
+        threshold_ = static_cast<uint64_t>(args[1].ToNumber());
     if (args.size() >= 3 && args[2].IsNumber())
-        downloader_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
-    // HLS engine: forward the same limits (threshold is HTTP-only).
-    if (args.size() >= 1 && args[0].IsNumber())
-        hls_.SetPartCount(static_cast<int>(args[0].ToNumber()));
-    if (args.size() >= 3 && args[2].IsNumber())
-        hls_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
-    // DASH tracks and the yt-dlp fallback obey the same cap (part count is
-    // fixed for both: DASH inherits the plain engine's, yt-dlp has one
-    // connection by construction).
-    if (args.size() >= 3 && args[2].IsNumber()) {
-        dash_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
-        ytdlp_.SetSpeedLimit(static_cast<uint64_t>(args[2].ToNumber()));
+        speed_limit_ = static_cast<uint64_t>(args[2].ToNumber());
+
+    for (const auto& kv : jobs_) {
+        const auto& s = kv.second;
+        if (s->downloader) {
+            s->downloader->SetPartCount(part_count_);
+            s->downloader->SetMultiSegmentThreshold(threshold_);
+        }
+        if (s->hls)  s->hls->SetPartCount(std::min(part_count_, 8));
+        if (s->dash) s->dash->SetPartCount(part_count_);
     }
+    UpdateActiveSpeedLimits();
     // args[3] (downloadPath) is stored in localStorage on the JS side.
 }
 
@@ -2249,8 +2341,45 @@ ultralight::JSValue ODMApp::JS_GetPartInfo(const ultralight::JSObject&,
     std::string id;
     if (args.size() >= 1 && args[0].IsString())
         id = ToStdStr(args[0].ToString());
-    std::string json = downloader_.GetPartInfoJson(id);
-    return ultralight::JSValue(json.c_str());
+    auto it = jobs_.find(id);
+    if (it == jobs_.end()) return ultralight::JSValue("{}");
+    if (it->second->downloader) {
+        std::string json = it->second->downloader->GetPartInfoJson(id);
+        return ultralight::JSValue(json.c_str());
+    }
+    if (it->second->dash) {
+        std::string json = it->second->dash->GetPartInfoJson(id);
+        return ultralight::JSValue(json.c_str());
+    }
+    return ultralight::JSValue("{}");
+}
+
+void ODMApp::JS_VerifyChecksum(const ultralight::JSObject&,
+                               const ultralight::JSArgs& args) {
+    auto arg_str = [&](size_t i) {
+        return args.size() > i && args[i].IsString() ? ToStdStr(args[i].ToString())
+                                                     : std::string();
+    };
+    const std::string file_path = arg_str(0);
+    const std::string expected  = arg_str(1);
+    const std::string req_id    = arg_str(2);
+    if (file_path.empty() || req_id.empty()) return;
+
+    std::thread([mail = mail_, file_path, expected, req_id] {
+        const checksum::Result r = checksum::VerifyFile(file_path, expected);
+        std::ostringstream json;
+        json << "{\"ok\":" << (r.ok ? "true" : "false")
+             << ",\"algo\":\"" << JsonEsc(checksum::AlgorithmName(r.algo)) << "\""
+             << ",\"actual\":\"" << JsonEsc(r.actual_hex) << "\""
+             << ",\"expected\":\"" << JsonEsc(r.expected_hex) << "\""
+             << ",\"match\":" << (r.matched ? "true" : "false")
+             << ",\"error\":\"" << JsonEsc(r.error) << "\"}";
+
+        std::ostringstream js;
+        js << "if (window.UI && UI.onChecksum) UI.onChecksum('"
+           << EscapeJS(req_id) << "', '" << EscapeJS(json.str()) << "');";
+        mail->PostJS(js.str());
+    }).detach();
 }
 
 // --- Engine callbacks ------------------------------------------------------

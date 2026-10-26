@@ -258,7 +258,7 @@ bool HlsDownloader::FetchToMemory(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");      // gzip ok
     if (speed_limit_ > 0) {
         const auto per = static_cast<curl_off_t>(
-            std::max<uint64_t>(speed_limit_ / std::max(part_count_, 1), 4096));
+            std::max<uint64_t>(speed_limit_.load() / std::max(part_count_, 1), 4096));
         curl_easy_setopt(curl, CURLOPT_MAX_RECV_SPEED_LARGE, per);
     }
     ApplyRequestContext(curl, url);

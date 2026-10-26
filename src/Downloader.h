@@ -313,9 +313,9 @@ private:
     // Claim exclusive ownership of a chunk (exactly one worker wins).
     bool ClaimChunk(uint64_t idx);
 
-    int  part_count_ = 8;
-    uint64_t threshold_ = 1 * 1024 * 1024; // 1 MB
-    uint64_t speed_limit_ = 0;             // bytes/sec across all connections (0 = off)
+    int                   part_count_ = 8;
+    uint64_t              threshold_ = 1 * 1024 * 1024; // 1 MB
+    std::atomic<uint64_t> speed_limit_{0};              // bytes/sec across all connections (0 = off)
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};

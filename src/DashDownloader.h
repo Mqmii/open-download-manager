@@ -111,8 +111,8 @@ private:
     DownloadResult    last_result_;
     std::atomic<bool> track_done_{false};
 
-    int      part_count_ = 8;
-    uint64_t speed_limit_ = 0;
+    int                   part_count_ = 8;
+    std::atomic<uint64_t> speed_limit_{0};
 };
 
 } // namespace odm

@@ -62,6 +62,8 @@ add_app(${APP_NAME}
     src/UpdateCheck.cpp
     src/TrackId.h
     src/TrackId.cpp
+    src/Checksum.h
+    src/Checksum.cpp
 )
 
 # Embed the application icon into the Windows executable's resource section.
@@ -86,7 +88,7 @@ target_link_libraries(${APP_NAME} PRIVATE ${FFMPEG_LIBRARIES})
 
 # WinSock for the browser bridge server (localhost HTTP, no external deps).
 if(WIN32)
-    target_link_libraries(${APP_NAME} PRIVATE ws2_32)
+    target_link_libraries(${APP_NAME} PRIVATE ws2_32 bcrypt)
 endif()
 
 # Make file:// URLs resolve to our assets/ folder next to the executable.
@@ -153,6 +155,10 @@ if(ODM_BUILD_TESTS)
     # revocation endpoint is unreachable, while the browser soft-fails and
     # gets through. Runs under Node; no network access.
     odm_add_js_test(tls_policy tools/tls_policy_test.js)
+
+    # Asserts simultaneous downloads start in parallel up to maxConcurrent,
+    # overflow queues in FIFO order, and per-job pause stops only that job.
+    odm_add_js_test(simultaneous_jobs tools/simultaneous_jobs_test.js)
 
     # Asserts the yt-dlp route recognizes the Vimeo URL shapes and rewrites
     # them to the player form before yt-dlp sees them (the API form dies on a
@@ -275,6 +281,17 @@ if(ODM_BUILD_TESTS)
         target_link_libraries(update_check_test PRIVATE ws2_32)
     endif()
     add_test(NAME update_check COMMAND update_check_test)
+
+    # Asserts MD5, SHA-1, SHA-256, and SHA-512 checksum parsing, computation,
+    # and verification against matching and corrupted files. Filesystem only.
+    add_executable(checksum_test
+        tools/checksum_test.cpp
+        src/Checksum.cpp)
+    target_include_directories(checksum_test PRIVATE src)
+    if(WIN32)
+        target_link_libraries(checksum_test PRIVATE bcrypt)
+    endif()
+    add_test(NAME checksum COMMAND checksum_test)
 endif()
 
 # yt-dlp.exe (YouTube extraction) is not in the repository -- it is a 17 MB

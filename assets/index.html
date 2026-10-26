@@ -298,6 +298,10 @@
       <span>Delete From Disk</span>
     </div>
     <div class="menu-separator"></div>
+    <div class="menu-item" data-action="verify-checksum">
+      <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+      <span>Verify Checksum</span>
+    </div>
     <div class="menu-item" data-action="properties">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
       <span>Properties</span>
@@ -338,6 +342,13 @@
               <svg viewBox="0 0 24 24" width="16" height="16"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
               <span>Browse</span>
             </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="checksum-input">Expected Checksum (Optional)</label>
+          <div class="input-row">
+            <input id="checksum-input" type="text" placeholder="MD5, SHA-1, SHA-256, or SHA-512 hash (auto-detected)" spellcheck="false" />
           </div>
         </div>
       </div>
@@ -388,6 +399,17 @@
             <span>Performance</span>
           </div>
           <div class="opt-card">
+            <div class="opt-row">
+              <div class="opt-row-info">
+                <label class="opt-row-title" for="opt-concurrent">Simultaneous Downloads</label>
+                <span class="opt-row-desc">Maximum number of downloads running in parallel at the same time. Additional files wait in the queue.</span>
+              </div>
+              <div class="opt-row-control">
+                <input id="opt-concurrent" type="range" min="1" max="10" value="3" />
+                <span id="opt-concurrent-val" class="range-value">3</span>
+              </div>
+            </div>
+            <div class="opt-divider"></div>
             <div class="opt-row">
               <div class="opt-row-info">
                 <label class="opt-row-title" for="opt-connections">Parallel Connections</label>
@@ -468,6 +490,20 @@
             <span>Download</span>
           </div>
           <div class="opt-card" id="prop-download-card"></div>
+        </div>
+        <!-- Checksum verification section -->
+        <div class="opt-section" id="prop-checksum-section">
+          <div class="opt-section-header">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+            <span>Checksum Verification</span>
+          </div>
+          <div class="opt-card">
+            <div id="prop-checksum-card"></div>
+            <div class="prop-checksum-verify-row">
+              <input id="prop-checksum-input" type="text" placeholder="Paste expected MD5, SHA-1, SHA-256, or SHA-512 hash to verify..." spellcheck="false" />
+              <button id="prop-checksum-verify-btn" class="modal-btn modal-btn-secondary" type="button">Verify</button>
+            </div>
+          </div>
         </div>
         <!-- Media analysis sections (General / Video / Audio / Text / Menu) -->
         <div id="media-info-sections"></div>

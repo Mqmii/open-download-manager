@@ -8,6 +8,7 @@
 #include <Ultralight/String.h>
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -109,6 +110,48 @@ private:
     // download-detail modal.
     ultralight::JSValue JS_GetPartInfo(const ultralight::JSObject& thisObj,
                                        const ultralight::JSArgs& args);
+    // Compute and/or verify a file's checksum on a worker thread; the result
+    // is delivered asynchronously via UI.onChecksum(requestId, json).
+    void JS_VerifyChecksum(const ultralight::JSObject& thisObj,
+                           const ultralight::JSArgs& args);
+
+    // One independent download slot per active job, so several jobs can run
+    // simultaneously and any individual job can be paused without stopping
+    // the rest.
+    struct JobSlot {
+        std::string                        id;
+        std::string                        out_path;
+        std::atomic<bool>                  suppress_callbacks{false};
+        std::shared_ptr<std::atomic<bool>> resolve_cancel;
+        std::unique_ptr<Downloader>        downloader;
+        std::unique_ptr<HlsDownloader>     hls;
+        std::unique_ptr<DashDownloader>    dash;
+        std::unique_ptr<YtDlpDownloader>   ytdlp;
+
+        bool IsRunning() const {
+            if (resolve_cancel && !resolve_cancel->load()) return true;
+            if (downloader && downloader->IsRunning()) return true;
+            if (hls && hls->IsRunning()) return true;
+            if (dash && dash->IsRunning()) return true;
+            if (ytdlp && ytdlp->IsRunning()) return true;
+            return false;
+        }
+
+        void Stop() {
+            if (resolve_cancel) resolve_cancel->store(true);
+            if (downloader) downloader->Stop();
+            if (hls) hls->Stop();
+            if (dash) dash->Stop();
+            if (ytdlp) ytdlp->Stop();
+        }
+
+        void WaitForCompletion() {
+            if (downloader) downloader->WaitForCompletion();
+            if (hls) hls->WaitForCompletion();
+            if (dash) dash->WaitForCompletion();
+            if (ytdlp) ytdlp->WaitForCompletion();
+        }
+    };
 
     // Tail of JS_StartDownload: resolve the output path, announce the job and
     // route it to an engine. Split out because a YouTube job cannot get here
@@ -118,18 +161,24 @@ private:
     // media URL. It is empty for everything whose URL is stable, and the watch
     // page for a YouTube job, whose signed rung URLs are re-resolved (and so
     // differ) on every launch.
-    void BeginDownload(std::string url, std::string out_path, std::string id,
+    void BeginDownload(std::shared_ptr<JobSlot> slot,
+                       std::string url, std::string out_path, std::string id,
                        RequestContext ctx, std::string suggested_name,
                        std::string job_type, std::string audio_url,
+                       int max_height = 0,
                        std::string resume_key = std::string());
 
     // Ask yt-dlp for the media URLs of a watch page on a worker thread, then
     // continue in BeginDownload on the main thread.
-    void StartYouTubeDownload(const std::string& page_url,
+    void StartYouTubeDownload(std::shared_ptr<JobSlot> slot,
+                              const std::string& page_url,
                               const std::string& out_path,
                               const std::string& id,
                               const std::string& suggested_name,
                               int max_height);
+
+    // Divide the global speed limit across all currently running jobs.
+    void UpdateActiveSpeedLimits();
 
     // ---- Engine callbacks ----
     void OnProgress(const ProgressInfo& info);
@@ -154,15 +203,10 @@ private:
     ultralight::RefPtr<ultralight::Window> window_;
     ultralight::RefPtr<ultralight::Overlay> overlay_;
 
-    Downloader downloader_;
-    // HLS (m3u8) engine — used instead of downloader_ when the incoming job
-    // is tagged type="hls" by the browser extension. Same callback surface.
-    HlsDownloader hls_;
-    // Paired-track DASH (Instagram/Facebook): video rung + audio rung, muxed.
-    DashDownloader dash_;
-    // YouTube fallback: yt-dlp does the fetching itself when the video has no
-    // plain Range-capable URL for our own engines to work with.
-    YtDlpDownloader ytdlp_;
+    std::map<std::string, std::shared_ptr<JobSlot>> jobs_;
+    int      part_count_  = 8;
+    uint64_t threshold_   = 1 * 1024 * 1024;
+    uint64_t speed_limit_ = 0;
     ultralight::RefPtr<ultralight::JSContext> js_ctx_;
 
     // Localhost bridge to the browser extension (127.0.0.1:47923).
@@ -173,13 +217,14 @@ private:
     std::thread  tray_thread_;
 
     // Work handed back to the main thread. This lives in its own shared object
-    // rather than as plain members because four background jobs run detached:
-    // the URL probe, MediaInfo, the YouTube resolver and the "Open with"
-    // dialog. Nothing joins them — the dialog in particular stays open as long
-    // as the user leaves it open — so one can still be mid-flight when the
-    // window closes. Those workers capture the mailbox instead of `this`, so a
-    // late result posts into an object guaranteed to outlive the app, and
-    // Close() turns such posts into no-ops rather than a use-after-free.
+    // rather than as plain members because background jobs run detached:
+    // the URL probe, MediaInfo, checksum verification, the YouTube resolver
+    // and the "Open with" dialog. Nothing joins them — the dialog in particular
+    // stays open as long as the user leaves it open — so one can still be
+    // mid-flight when the window closes. Those workers capture the mailbox
+    // instead of `this`, so a late result posts into an object guaranteed to
+    // outlive the app, and Close() turns such posts into no-ops rather than a
+    // use-after-free.
     struct Mailbox {
         std::mutex                        mtx;
         std::queue<std::string>           js;
@@ -208,14 +253,6 @@ private:
         std::string version;
     };
     std::shared_ptr<UpdateSlot> update_slot_ = std::make_shared<UpdateSlot>();
-
-    // Non-null while yt-dlp is reading a video page. Reading can take seconds
-    // and no engine is running yet, so without this "Stop" has nothing to act
-    // on and the download starts anyway once the page comes back. Shared
-    // rather than a plain member because the resolver thread outlives a quit
-    // and would otherwise be reading a destroyed flag. Only ever assigned on
-    // the main thread (start, stop and the post-resolve task all run there).
-    std::shared_ptr<std::atomic<bool>> resolve_cancel_;
 };
 
 } // namespace odm

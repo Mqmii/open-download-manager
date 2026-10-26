@@ -51,6 +51,7 @@ const el = {
   modalCancel:  document.getElementById('modal-cancel-btn'),
   urlInput:     document.getElementById('url'),
   pathInput:    document.getElementById('path'),
+  checksumInput: document.getElementById('checksum-input'),
   pasteBtn:     document.getElementById('paste-btn'),
   browseBtn:    document.getElementById('browse-btn'),
   startBtn:     document.getElementById('start-btn'),
@@ -68,6 +69,8 @@ const el = {
   optSaveBtn:     document.getElementById('options-save-btn'),
   optPathInput:   document.getElementById('opt-download-path'),
   optBrowseBtn:   document.getElementById('opt-browse-btn'),
+  optConcurrent:  document.getElementById('opt-concurrent'),
+  optConcurrentVal: document.getElementById('opt-concurrent-val'),
   optConnections: document.getElementById('opt-connections'),
   optConnVal:     document.getElementById('opt-connections-val'),
   optThreshold:   document.getElementById('opt-threshold-select'),
@@ -80,6 +83,9 @@ const el = {
   propCloseBtn:   document.getElementById('prop-close-btn'),
   propCopyBtn:    document.getElementById('prop-copy-btn'),
   propCard:       document.getElementById('prop-download-card'),
+  propChecksumCard: document.getElementById('prop-checksum-card'),
+  propChecksumInput: document.getElementById('prop-checksum-input'),
+  propChecksumVerifyBtn: document.getElementById('prop-checksum-verify-btn'),
   propMediaSects: document.getElementById('media-info-sections'),
 
   // View menu (top nav)
@@ -404,17 +410,30 @@ function cancelRetry(dl) {
   if (dl._retryCountdown) { clearInterval(dl._retryCountdown); dl._retryCountdown = null; }
 }
 
-// Kick off (or queue) a download for the given row. The engine runs one job at
-// a time, so a request that arrives while another job is live waits its turn:
-// the running download is left alone and UI.onComplete starts the next queued
-// row once the engine is free. Adding a second file must never interrupt the
-// first — stopping the active job here meant that starting five parts of an
-// archive left four of them stopped and only the last one running.
+// Kick off (or queue) a download for the given row. Up to getMaxConcurrent()
+// jobs run in parallel; any request beyond that waits in FIFO order in
+// pendingStarts and is promoted as active slots free up.
+function getMaxConcurrent() {
+  const n = typeof optionsCache === 'object' && optionsCache
+    ? parseInt(optionsCache.maxConcurrent, 10)
+    : 3;
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 10) : 3;
+}
+
+function getActiveDownloadCount(excludeId) {
+  let count = 0;
+  for (let i = 0; i < downloads.length; i++) {
+    const d = downloads[i];
+    if (d && d.status === 'downloading' && d.id !== excludeId) count++;
+  }
+  return count;
+}
+
 function requestStart(dl) {
   const nativeAvailable = typeof StartDownload === 'function';
-  const active = downloads.find(d => d.status === 'downloading' && d.id !== dl.id);
+  const activeCount = getActiveDownloadCount(dl.id);
 
-  if (nativeAvailable && active) {
+  if (activeCount >= getMaxConcurrent()) {
     // Re-queueing the same row must not enqueue it twice (clicking Resume
     // repeatedly would otherwise start it once per click later on).
     const queued = pendingStarts.find(q => q.id === dl.id);
@@ -426,9 +445,11 @@ function requestStart(dl) {
     dl.status = 'queued';
     dl.timeLeft = 'Queued';
     dl.speed = '';
+    dl._speedBps = 0;
     return;
   }
 
+  dequeue(dl.id);
   dl.status = 'downloading';
   if (nativeAvailable) {
     StartDownload(dl.url, dl.path, dl.id, dl.ctx ? JSON.stringify(dl.ctx) : '');
@@ -437,11 +458,12 @@ function requestStart(dl) {
   }
 }
 
-// Hand the engine the next queued row, if any. Called whenever the engine goes
-// idle. Rows the user removed, stopped or dequeued meanwhile are skipped, and
-// the queue keeps the order the user added them in.
+// Hand the engine queued rows until active downloads reach getMaxConcurrent().
+// Called whenever a job finishes, stops/pauses, is deleted, or when the user
+// raises the simultaneous download limit in Options.
 function startNextQueued() {
-  while (pendingStarts.length) {
+  let startedAny = false;
+  while (pendingStarts.length > 0 && getActiveDownloadCount(null) < getMaxConcurrent()) {
     const next = pendingStarts.shift();
     const ndl = downloads.find(d => d.id === next.id);
     if (!ndl || ndl.status !== 'queued') continue;
@@ -453,9 +475,9 @@ function startNextQueued() {
     } else {
       simulateMockDownload(next.id);
     }
-    return true;
+    startedAny = true;
   }
-  return false;
+  return startedAny;
 }
 
 // Drop a row from the queue (it was stopped, removed or restarted).
@@ -464,19 +486,19 @@ function dequeue(id) {
   if (i !== -1) pendingStarts.splice(i, 1);
 }
 
-// Patch only the active row's progress bar/labels instead of rebuilding the
-// entire table on every progress tick. Caches the active row's DOM nodes so
-// 10 Hz ticks don't re-run querySelector/querySelectorAll every 100ms.
-let _activeRowCache = null;
+// Patch only an active row's progress bar/labels instead of rebuilding the
+// entire table on every progress tick. Caches DOM nodes per download id so
+// simultaneous 10 Hz ticks don't thrash querySelector across rows.
+const _activeRowCache = new Map();
 function patchActiveRow(dl) {
-  let c = _activeRowCache;
-  if (!c || c.id !== dl.id || !c.tr.isConnected) {
+  let c = _activeRowCache.get(dl.id);
+  if (!c || !c.tr.isConnected) {
     const tr = el.tableBody.querySelector(`tr[data-id="${dl.id}"]`);
     if (!tr) return false;
     const fill = tr.querySelector('.progress-fill');
     const stats = tr.querySelectorAll('.progress-stats-row span');
     if (!fill || stats.length < 2) return false;   // row isn't in "downloading" layout
-    c = _activeRowCache = {
+    c = {
       id: dl.id,
       tr,
       fill,
@@ -484,12 +506,32 @@ function patchActiveRow(dl) {
       stat1: stats[1],
       timeCell: tr.children[4] || null
     };
+    _activeRowCache.set(dl.id, c);
   }
   c.fill.style.width = dl.pct + '%';
   c.stat0.textContent = `${dl.downloaded || '0 B'} of ${dl.total || '0 B'} (${dl.pct.toFixed(0)}%)`;
   c.stat1.textContent = dl.speed || '';
   if (c.timeCell) c.timeCell.textContent = dl.timeLeft || '--';
   return true;
+}
+
+function updateTotalSpeed() {
+  let totalBps = 0;
+  let active = 0;
+  for (let i = 0; i < downloads.length; i++) {
+    const d = downloads[i];
+    if (d && d.status === 'downloading') {
+      active++;
+      if (Number.isFinite(d._speedBps) && d._speedBps > 0) {
+        totalBps += d._speedBps;
+      }
+    }
+  }
+  if (el.dlSpeed) {
+    el.dlSpeed.textContent = active > 0 && totalBps > 0
+      ? formatBytes(totalBps) + '/s'
+      : '0 B/s';
+  }
 }
 
 // Categorize file extensions
@@ -531,6 +573,7 @@ function escapeHtml(s) {
 
 // Render Table Rows
 function renderTable() {
+  _activeRowCache.clear();
   const filterText = el.searchInput.value.trim().toLowerCase();
   
   // Filter based on search input and active category sidebar selection
@@ -578,8 +621,27 @@ function renderTable() {
     // nothing else can ever reach the CSS.
     const pct = Number(dl.pct) || 0;
 
+    // Per-row inline Pause / Resume button
+    const canPause = dl.status === 'downloading' || dl.status === 'queued';
+    const canResume = dl.status === 'stopped' || dl.status === 'failed';
+    const rowActionBtn = canPause
+      ? `<button class="row-action-btn" type="button" data-row-action="pause" data-id="${id}" title="${dl.status === 'queued' ? 'Remove from queue' : 'Pause this download'}"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg></button>`
+      : canResume
+      ? `<button class="row-action-btn" type="button" data-row-action="resume" data-id="${id}" title="Resume this download"><svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg></button>`
+      : '';
+
+    // Checksum badge
+    let hashBadge = '';
+    if (dl.hashStatus === 'verified') {
+      hashBadge = `<span class="hash-badge verified" title="${escapeHtml((dl.hashAlgo || 'Checksum') + ': ' + (dl.actualHash || ''))}">✓ ${escapeHtml(dl.hashAlgo || 'Verified')}</span>`;
+    } else if (dl.hashStatus === 'mismatch') {
+      hashBadge = `<span class="hash-badge mismatch" title="Expected: ${escapeHtml(dl.expectedHash || '')}&#10;Actual: ${escapeHtml(dl.actualHash || '')}">✕ Hash mismatch</span>`;
+    } else if (dl.hashStatus === 'verifying') {
+      hashBadge = `<span class="hash-badge verifying">Verifying…</span>`;
+    }
+
     // Status text format
-    let statusHTML = `<span class="status-badge ${status}">${escapeHtml(capitalize(dl.status))}</span>`;
+    let statusHTML = `<div class="status-cell-wrap"><span class="status-badge ${status}">${escapeHtml(capitalize(dl.status))}</span>${rowActionBtn}</div>`;
 
     return `
       <tr data-id="${id}" class="${isSelected ? 'selected' : ''}">
@@ -589,7 +651,7 @@ function renderTable() {
             <div class="file-icon">${getFileIcon(dl.name)}</div>
             <div class="file-info">
               <span class="file-title" title="${name}">${name}</span>
-              <span class="file-subtitle">${escapeHtml(getFileExtension(dl.name))}</span>
+              <span class="file-subtitle">${escapeHtml(getFileExtension(dl.name))}${hashBadge}</span>
               ${isDownloading ? `
                 <div class="progress-wrapper">
                   <div class="progress-track">
@@ -620,25 +682,21 @@ function updateToolbarState() {
   const selected = downloads.find(dl => dl.id === selectedId);
   const activeDl = downloads.find(dl => dl.status === 'downloading');
   const anyQueued = downloads.some(dl => dl.status === 'queued');
-  const anyChecked = downloads.some(dl => dl.checked);
+  const checkedRows = downloads.filter(dl => dl.checked);
+  const anyChecked = checkedRows.length > 0;
 
   // Trash is active when a row is highlighted OR any rows are ticked via
   // their checkboxes (checked rows take precedence for the delete action).
   el.tbDelete.disabled = !(selected || anyChecked);
 
-  if (selected) {
-    if (selected.status === 'downloading' || selected.status === 'queued') {
-      // Stop on a queued row means "give up my place in the queue".
-      el.tbStop.disabled = false;
-      el.tbResume.disabled = true;
-    } else if (selected.status === 'stopped' || selected.status === 'failed') {
-      el.tbResume.disabled = false;
-      // Allow Stop when a failed download has a pending auto-retry
-      el.tbStop.disabled = !selected._retryTimer;
-    } else { // finished
-      el.tbResume.disabled = true;
-      el.tbStop.disabled = true;
-    }
+  const actionTargets = anyChecked ? checkedRows : (selected ? [selected] : []);
+  if (actionTargets.length > 0) {
+    const canStopAny = actionTargets.some(dl =>
+      dl.status === 'downloading' || dl.status === 'queued' || !!dl._retryTimer);
+    const canResumeAny = actionTargets.some(dl =>
+      dl.status === 'stopped' || dl.status === 'failed');
+    el.tbStop.disabled = !canStopAny;
+    el.tbResume.disabled = !canResumeAny;
   } else {
     el.tbResume.disabled = true;
     el.tbStop.disabled = true;
@@ -717,6 +775,23 @@ function setupEventListeners() {
       updateToolbarState();
       return;
     }
+
+    // Per-row Pause / Resume button click
+    const actionBtn = e.target.closest('.row-action-btn');
+    if (actionBtn) {
+      e.stopPropagation();
+      selectedId = id;
+      const dl = downloads.find(x => x.id === id);
+      if (dl) {
+        const action = actionBtn.getAttribute('data-row-action');
+        if (action === 'pause') pauseDownload(dl);
+        else if (action === 'resume') resumeDownload(dl);
+        saveData();
+        renderTable();
+        updateToolbarState();
+      }
+      return;
+    }
     
     selectedId = id;
     
@@ -732,7 +807,7 @@ function setupEventListeners() {
   el.tableBody.addEventListener('dblclick', (e) => {
     const tr = e.target.closest('tr');
     if (!tr || tr.classList.contains('empty-row')) return;
-    if (e.target.closest('.cb-cell')) return;
+    if (e.target.closest('.cb-cell') || e.target.closest('.row-action-btn')) return;
     
     const id = tr.getAttribute('data-id');
     const dl = downloads.find(x => x.id === id);
@@ -1032,6 +1107,7 @@ function openDownloadsFolder() {
 function openModal() {
   el.urlInput.value = '';
   el.pathInput.value = '';
+  if (el.checksumInput) el.checksumInput.value = '';
   resetUrlProbe();
   el.modal.style.display = 'flex';
   el.urlInput.focus();
@@ -1201,6 +1277,7 @@ function showStatusToast(msg) {
 
 const DEFAULT_OPTIONS = {
   downloadPath: '',
+  maxConcurrent: 3,
   connections: 8,
   threshold: 10485760,
   speedLimitEnabled: false,
@@ -1224,6 +1301,11 @@ function loadOptions() {
 
 function applyOptionsToUI() {
   el.optPathInput.value = optionsCache.downloadPath || '';
+  if (el.optConcurrent) {
+    const mc = getMaxConcurrent();
+    el.optConcurrent.value = mc;
+    if (el.optConcurrentVal) el.optConcurrentVal.textContent = mc;
+  }
   el.optConnections.value = optionsCache.connections;
   el.optConnVal.textContent = optionsCache.connections;
   setCustomSelectValue(el.optThreshold, String(optionsCache.threshold));
@@ -1234,6 +1316,9 @@ function applyOptionsToUI() {
 
 function saveOptions() {
   optionsCache.downloadPath = el.optPathInput.value.trim();
+  if (el.optConcurrent) {
+    optionsCache.maxConcurrent = Math.max(1, Math.min(10, parseInt(el.optConcurrent.value, 10) || 3));
+  }
   optionsCache.connections = parseInt(el.optConnections.value, 10) || 8;
   optionsCache.threshold = parseInt(getCustomSelectValue(el.optThreshold), 10) || 10485760;
   optionsCache.speedLimitEnabled = el.optLimitToggle.classList.contains('on');
@@ -1245,6 +1330,14 @@ function saveOptions() {
 
   // Push settings to native engine if available
   applyOptionsToNative();
+
+  // If the simultaneous limit was raised while rows are waiting in the queue,
+  // promote them immediately.
+  if (startNextQueued()) {
+    saveData();
+    renderTable();
+    updateToolbarState();
+  }
 
   showStatusToast('Settings saved successfully.');
 }
@@ -1408,6 +1501,55 @@ function parseMediaInfoText(text) {
   return sections;
 }
 
+function renderPropChecksum(dl, liveRes) {
+  if (!el.propChecksumCard) return;
+  const rows = [];
+  const algo = (liveRes && liveRes.algo) || dl.hashAlgo || 'SHA-256';
+  const actual = (liveRes && liveRes.actual) || dl.actualHash || '';
+  const expected = (liveRes && liveRes.expected) || dl.expectedHash || '';
+
+  if (dl.hashStatus === 'verifying') {
+    rows.push(['Verification Status', 'Computing hash…']);
+  } else if (liveRes && liveRes.status === 'invalid_expected') {
+    rows.push(['Verification Status', liveRes.error || 'Invalid expected checksum']);
+  } else if (liveRes && liveRes.status === 'io_error') {
+    rows.push(['Verification Status', liveRes.error || 'File not available on disk']);
+  } else if (dl.hashStatus === 'verified' || (liveRes && liveRes.status === 'match')) {
+    rows.push(['Verification Status', `Verified (${algo} match)`]);
+  } else if (dl.hashStatus === 'mismatch' || (liveRes && liveRes.status === 'mismatch')) {
+    rows.push(['Verification Status', `MISMATCH (${algo} does not match expected)`]);
+  } else if (actual) {
+    rows.push(['Verification Status', 'Computed (no expected hash set)']);
+  } else {
+    rows.push(['Verification Status', dl.status === 'finished' ? 'Not verified yet' : 'Available after download finishes']);
+  }
+
+  if (expected) rows.push(['Expected Hash', expected]);
+  if (actual) rows.push([`${algo} Digest`, actual]);
+
+  el.propChecksumCard.innerHTML = propKvRowsHtml(rows);
+}
+
+function triggerChecksumVerify(dl, expectedInput) {
+  if (!dl || !dl.path) {
+    showStatusToast('File path is not available.');
+    return;
+  }
+  const exp = (expectedInput != null ? expectedInput : (dl.expectedHash || '')).trim();
+  dl.expectedHash = exp;
+  if (exp) dl.hashStatus = 'verifying';
+  saveData();
+  renderTable();
+  if (propCurrentDl && propCurrentDl.id === dl.id) {
+    renderPropChecksum(dl, null);
+  }
+  if (typeof VerifyChecksum === 'function') {
+    VerifyChecksum(dl.path, exp, dl.id);
+  } else {
+    showStatusToast('Checksum bridge is not available in preview mode.');
+  }
+}
+
 function openPropertiesModal(dl) {
   propCurrentDl = dl;
   propMediaInfoRaw = '';
@@ -1421,6 +1563,17 @@ function openPropertiesModal(dl) {
     ['Status',        capitalize(dl.status)],
     ['Last Modified', dl.lastModified || '--'],
   ]);
+
+  if (el.propChecksumInput) {
+    el.propChecksumInput.value = dl.expectedHash || '';
+  }
+  renderPropChecksum(dl, null);
+  if (typeof VerifyChecksum === 'function' && dl.path && dl.status === 'finished' &&
+      (!dl.actualHash || (dl.expectedHash && !dl.hashStatus))) {
+    if (dl.expectedHash) dl.hashStatus = 'verifying';
+    renderPropChecksum(dl, null);
+    VerifyChecksum(dl.path, dl.expectedHash || '', dl.id);
+  }
 
   // Media analysis: ask the native side, show a loading note meanwhile.
   const canAnalyze = typeof RequestMediaInfo === 'function' && dl.path;
@@ -1469,7 +1622,9 @@ function setupPropertiesEventListeners() {
     const dl = propCurrentDl;
     let text = dl
       ? `Name: ${dl.name}\nURL: ${dl.url}\nSave Path: ${dl.path || '(not set)'}\n` +
-        `Size: ${dl.size}\nStatus: ${capitalize(dl.status)}\nLast Modified: ${dl.lastModified || '--'}\n`
+        `Size: ${dl.size}\nStatus: ${capitalize(dl.status)}\nLast Modified: ${dl.lastModified || '--'}\n` +
+        (dl.actualHash ? `${dl.hashAlgo || 'SHA-256'}: ${dl.actualHash}\n` : '') +
+        (dl.expectedHash ? `Expected Hash: ${dl.expectedHash} (${dl.hashStatus || 'unverified'})\n` : '')
       : '';
     if (propMediaInfoRaw) text += '\n' + propMediaInfoRaw;
     try {
@@ -1479,6 +1634,21 @@ function setupPropertiesEventListeners() {
       showStatusToast('Could not access the clipboard.');
     }
   });
+
+  if (el.propChecksumVerifyBtn) {
+    el.propChecksumVerifyBtn.addEventListener('click', () => {
+      if (!propCurrentDl) return;
+      const val = el.propChecksumInput ? el.propChecksumInput.value.trim() : '';
+      triggerChecksumVerify(propCurrentDl, val);
+    });
+  }
+  if (el.propChecksumInput) {
+    el.propChecksumInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && propCurrentDl) {
+        triggerChecksumVerify(propCurrentDl, el.propChecksumInput.value.trim());
+      }
+    });
+  }
 }
 
 // ---- Download Detail Modal (double-click a downloading row) ----
@@ -1673,24 +1843,16 @@ function setupDownloadDetailListeners() {
     ddTick();
   });
 
-  // Pause/Resume toggle for the shown download. Downloading -> stop (same
-  // semantics as the toolbar Stop) and flip to "Paused"; clicking the
-  // "Paused" state resumes from the kept partial file (chunk bitmap).
+  // Pause/Resume toggle for the shown download. Downloading -> stop only this
+  // download and flip to "Paused"; clicking "Paused" resumes from the kept
+  // partial file (chunk bitmap).
   el.ddPause.addEventListener('click', () => {
     const dl = ddCurrent;
     if (!dl) return;
     if (dl.status === 'downloading') {
-      cancelRetry(dl);
-      dl._retryCount = 0;
-      dl.status = 'stopped';
-      dl.timeLeft = '--';
-      dl.speed = '';
-      if (typeof StopDownload === 'function') StopDownload();
+      pauseDownload(dl);
     } else if (dl.status === 'stopped') {
-      cancelRetry(dl);
-      dl._retryCount = 0;
-      dl.timeLeft = 'Resuming...';
-      requestStart(dl);           // sets the status: running, or queued
+      resumeDownload(dl);
     } else {
       return;                     // finished/failed: nothing to toggle
     }
@@ -1721,7 +1883,12 @@ function setupOptionsEventListeners() {
     closeOptionsModal();
   });
 
-  // Range slider live value
+  // Range slider live values
+  if (el.optConcurrent) {
+    el.optConcurrent.addEventListener('input', () => {
+      if (el.optConcurrentVal) el.optConcurrentVal.textContent = el.optConcurrent.value;
+    });
+  }
   el.optConnections.addEventListener('input', () => {
     el.optConnVal.textContent = el.optConnections.value;
   });
@@ -1899,10 +2066,18 @@ async function handleContextMenuAction(action) {
       requestStart(selected);
       break;
     case 'resume':
-      resumeSelected();
+      if (resumeDownload(selected)) {
+        saveData();
+        renderTable();
+        updateToolbarState();
+      }
       break;
     case 'stop':
-      stopSelected();
+      if (pauseDownload(selected)) {
+        saveData();
+        renderTable();
+        updateToolbarState();
+      }
       break;
     case 'refresh-address': {
       const newUrl = await uiPrompt('Refresh Download Address', 'Refresh download URL link:', selected.url);
@@ -1932,6 +2107,12 @@ async function handleContextMenuAction(action) {
       if (ok) deleteRows([selected], true);
       break;
     }
+    case 'verify-checksum':
+      openPropertiesModal(selected);
+      if (el.propChecksumInput) {
+        setTimeout(() => { el.propChecksumInput.focus(); el.propChecksumInput.select(); }, 0);
+      }
+      break;
     case 'properties':
       openPropertiesModal(selected);
       break;
@@ -1956,7 +2137,7 @@ function newDownloadId() {
 //
 // `preferredName` wins when given; otherwise the URL basename is used.
 // `ctx` is the one-shot request context from the extension, or null.
-function addDownload(url, savePath, ctx, preferredName) {
+function addDownload(url, savePath, ctx, preferredName, expectedHash) {
   let name = preferredName ||
              url.substring(url.lastIndexOf('/') + 1).split('?')[0] ||
              'download.bin';
@@ -1988,6 +2169,9 @@ function addDownload(url, savePath, ctx, preferredName) {
     lastModified: new Date().toLocaleString()
   };
   if (ctx) newDl.ctx = ctx;
+  if (expectedHash && expectedHash.trim()) {
+    newDl.expectedHash = expectedHash.trim();
+  }
 
   downloads.unshift(newDl);
   selectedId = newDl.id;
@@ -2015,60 +2199,83 @@ function startNewDownload() {
   // a CDN link is hashed noise.
   const preferred = (lastProbe && lastProbe.forUrl === url && lastProbe.filename)
     ? lastProbe.filename : '';
+  const expectedHash = el.checksumInput ? el.checksumInput.value.trim() : '';
 
-  addDownload(url, el.pathInput.value.trim(), null, preferred);
+  addDownload(url, el.pathInput.value.trim(), null, preferred, expectedHash);
   closeModal();
 }
 
-// Action button: resume selected
-function resumeSelected() {
-  const selected = downloads.find(dl => dl.id === selectedId);
-  if (!selected || selected.status === 'downloading' ||
-      selected.status === 'queued' || selected.status === 'finished') return;
+// Pause/stop a single download by id without disturbing other active jobs.
+function pauseDownload(dl) {
+  if (!dl) return false;
+  cancelRetry(dl);
+  dl._retryCount = 0;
 
-  // Cancel any pending auto-retry and reset backoff (manual resume = fresh start)
-  cancelRetry(selected);
-  selected._retryCount = 0;
+  if (dl.status !== 'downloading' && dl.status !== 'failed' &&
+      dl.status !== 'queued') return false;
 
-  // Start (or queue behind any active job). Events route back by id.
-  // requestStart sets the status — running or queued — so it has to happen
-  // before the redraw, or the row keeps showing "Stopped" until the next tick.
-  selected.timeLeft = 'Resuming...';
-  requestStart(selected);
+  const wasRunning = dl.status === 'downloading';
+  dequeue(dl.id);
 
-  saveData();
-  renderTable();
-  updateToolbarState();
+  if (dl._mockTimer) {
+    clearInterval(dl._mockTimer);
+    dl._mockTimer = null;
+  }
+
+  dl.status = 'stopped';
+  dl.timeLeft = '--';
+  dl.speed = '';
+  dl._speedBps = 0;
+
+  if (wasRunning && typeof StopDownload === 'function') {
+    StopDownload(dl.id);
+  }
+  if (wasRunning) {
+    startNextQueued();
+  }
+  updateTotalSpeed();
+  return true;
 }
 
-// Action button: stop selected
+// Resume a single stopped/failed download.
+function resumeDownload(dl) {
+  if (!dl || dl.status === 'downloading' ||
+      dl.status === 'queued' || dl.status === 'finished') return false;
+
+  cancelRetry(dl);
+  dl._retryCount = 0;
+  dl.timeLeft = 'Resuming...';
+  requestStart(dl);
+  return true;
+}
+
+// Action button: resume selected (or checked rows)
+function resumeSelected() {
+  const targets = getDeleteTargets();
+  if (targets.length === 0) return;
+  let changed = false;
+  targets.forEach(dl => {
+    if (resumeDownload(dl)) changed = true;
+  });
+  if (changed) {
+    saveData();
+    renderTable();
+    updateToolbarState();
+  }
+}
+
+// Action button: stop selected (or checked rows)
 function stopSelected() {
-  const selected = downloads.find(dl => dl.id === selectedId);
-  if (!selected) return;
-
-  // Cancel any pending auto-retry
-  cancelRetry(selected);
-  selected._retryCount = 0;
-
-  // Allow stopping a failed download (cancels its auto-retry) or a row that is
-  // only waiting in the queue.
-  if (selected.status !== 'downloading' && selected.status !== 'failed' &&
-      selected.status !== 'queued') return;
-
-  // A queued row owns nothing in the engine: drop it from the queue and leave
-  // whatever is actually running alone.
-  const wasQueued = selected.status === 'queued';
-  dequeue(selected.id);
-
-  selected.status = 'stopped';
-  selected.timeLeft = '--';
-  selected.speed = '';
-  saveData();
-  renderTable();
-  updateToolbarState();
-
-  if (!wasQueued && typeof StopDownload === 'function') {
-    StopDownload();
+  const targets = getDeleteTargets();
+  if (targets.length === 0) return;
+  let changed = false;
+  targets.forEach(dl => {
+    if (pauseDownload(dl)) changed = true;
+  });
+  if (changed) {
+    saveData();
+    renderTable();
+    updateToolbarState();
   }
 }
 
@@ -2079,15 +2286,22 @@ function stopAllDownloads() {
     cancelRetry(dl);
     dl._retryCount = 0;
 
+    if (dl._mockTimer) {
+      clearInterval(dl._mockTimer);
+      dl._mockTimer = null;
+    }
+
     if (dl.status === 'downloading' || dl.status === 'queued') {
       dl.status = 'stopped';
       dl.timeLeft = '--';
       dl.speed = '';
+      dl._speedBps = 0;
     }
   });
   // "Stop all" means the queue too, or the next row would start the moment the
   // running one reports back that it stopped.
   pendingStarts = [];
+  updateTotalSpeed();
   saveData();
   renderTable();
   updateToolbarState();
@@ -2138,8 +2352,11 @@ function deleteRows(targets, fromDisk) {
   if (live.length > 0) {
     // The engine still holds the file open. Purge once it confirms the stop,
     // otherwise the delete races the handle and silently fails.
-    live.forEach(dl => pendingPurge.push({ id: dl.id, path: dl.path }));
-    if (typeof StopDownload === 'function') StopDownload();
+    live.forEach(dl => {
+      pendingPurge.push({ id: dl.id, path: dl.path });
+      if (dl._mockTimer) { clearInterval(dl._mockTimer); dl._mockTimer = null; }
+      if (typeof StopDownload === 'function') StopDownload(dl.id);
+    });
   }
   partialTargets
     .filter(dl => dl.status !== 'downloading')
@@ -2182,6 +2399,10 @@ function deleteRows(targets, fromDisk) {
   downloads = downloads.filter(dl => !ids.has(dl.id));
   selectedId = null;
 
+  if (live.length > 0) {
+    startNextQueued();
+  }
+  updateTotalSpeed();
   saveData();
   renderTable();
   updateToolbarState();
@@ -2194,23 +2415,28 @@ function deleteSelected(fromDisk) {
 }
 
 // Mock simulation helper when previewing outside C++ application
-let mockInterval = null;
 function simulateMockDownload(id) {
-  if (mockInterval) clearInterval(mockInterval);
-  
-  let currentPct = 0;
-  mockInterval = setInterval(() => {
+  const dl0 = downloads.find(x => x.id === id);
+  if (dl0 && dl0._mockTimer) {
+    clearInterval(dl0._mockTimer);
+    dl0._mockTimer = null;
+  }
+
+  let currentPct = dl0 ? (Number(dl0.pct) || 0) : 0;
+  const timer = setInterval(() => {
     const dl = downloads.find(x => x.id === id);
     if (!dl || dl.status !== 'downloading') {
-      clearInterval(mockInterval);
+      clearInterval(timer);
+      if (dl) dl._mockTimer = null;
       return;
     }
-    
+
     currentPct += 5;
     if (currentPct >= 100) {
       currentPct = 100;
-      clearInterval(mockInterval);
-      
+      clearInterval(timer);
+      dl._mockTimer = null;
+
       // Complete
       UI.onComplete(id, 'ok', dl.path || 'C:\\Downloads\\DownloadManager\\' + dl.name, '');
     } else {
@@ -2231,6 +2457,7 @@ function simulateMockDownload(id) {
       );
     }
   }, 500);
+  if (dl0) dl0._mockTimer = timer;
 }
 
 function formatBytes(bytes) {
@@ -2264,6 +2491,7 @@ window.UI = {
       dl.total = total;
       dl.size = total;
       dl.speed = speed;
+      dl._speedBps = Number.isFinite(speedBps) ? speedBps : 0;
 
       // Calculate simple time left from raw byte counts.
       let seconds = NaN;
@@ -2301,8 +2529,11 @@ window.UI = {
       throttledSave();
     }
 
-    // Status Bar speed gauges
-    el.dlSpeed.textContent = speed || '0 B/s';
+    // Status Bar speed gauges (sum across all active jobs)
+    updateTotalSpeed();
+    if (!dl || !Number.isFinite(dl._speedBps)) {
+      el.dlSpeed.textContent = speed || '0 B/s';
+    }
     el.statusMsg.textContent = 'Downloading...';
   },
 
@@ -2322,6 +2553,7 @@ window.UI = {
     }
 
     if (dl) {
+      dl._speedBps = 0;
       if (kind === 'ok') {
         dl.status = 'finished';
         dl.pct = 100;
@@ -2336,7 +2568,13 @@ window.UI = {
         }
         dl.lastModified = new Date().toLocaleString();
 
-        showStatusToast('Download completed successfully.');
+        if (dl.expectedHash && dl.path && typeof VerifyChecksum === 'function') {
+          dl.hashStatus = 'verifying';
+          showStatusToast('Download completed — verifying checksum…');
+          VerifyChecksum(dl.path, dl.expectedHash, dl.id);
+        } else {
+          showStatusToast('Download completed successfully.');
+        }
       } else if (kind === 'stopped') {
         dl.status = 'stopped';
         dl.timeLeft = '--';
@@ -2365,10 +2603,10 @@ window.UI = {
       updateToolbarState();
     }
 
-    el.dlSpeed.textContent = '0 B/s';
+    updateTotalSpeed();
     updateDiskWidget();
 
-    // The engine is now free: hand it the next row waiting in the queue.
+    // A slot is now free: hand the engine the next row(s) waiting in the queue.
     if (startNextQueued()) {
       saveData();
       renderTable();
@@ -2415,6 +2653,38 @@ window.UI = {
     let info = null;
     try { info = JSON.parse(json); } catch (e) { info = null; }
     renderUrlProbe(info);
+  },
+
+  // 4e. Checksum verification / digest result from VerifyChecksum(path, expected, id).
+  onChecksum(requestId, json) {
+    let res = null;
+    try { res = JSON.parse(json); } catch (e) { res = null; }
+    if (!res) return;
+    const dl = downloads.find(d => d.id === requestId);
+    if (dl) {
+      if (res.algo) dl.hashAlgo = res.algo;
+      if (res.actual) dl.actualHash = res.actual;
+      if (res.status === 'match') {
+        dl.hashStatus = 'verified';
+        showStatusToast(`${dl.name}: ${res.algo} checksum verified.`);
+      } else if (res.status === 'mismatch') {
+        dl.hashStatus = 'mismatch';
+        showStatusToast(`${dl.name}: ${res.algo} checksum MISMATCH!`);
+      } else if (res.status === 'computed') {
+        if (!dl.expectedHash) dl.hashStatus = '';
+      } else if (res.status === 'invalid_expected') {
+        dl.hashStatus = '';
+        showStatusToast(res.error || 'Invalid expected checksum format.');
+      } else {
+        dl.hashStatus = '';
+        if (res.error) showStatusToast(res.error);
+      }
+      saveData();
+      renderTable();
+    }
+    if (propCurrentDl && propCurrentDl.id === requestId) {
+      renderPropChecksum(propCurrentDl, res);
+    }
   },
 
   // 4d. A newer release exists. Nothing is downloaded or installed here: the

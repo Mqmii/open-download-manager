@@ -23,6 +23,7 @@ void DashDownloader::SetPartCount(int parts) {
 
 void DashDownloader::SetSpeedLimit(uint64_t bytes_per_sec) {
     speed_limit_ = bytes_per_sec;
+    dl_.SetSpeedLimit(bytes_per_sec);
 }
 
 void DashDownloader::SetProgressCallback(ProgressCallback cb) {
