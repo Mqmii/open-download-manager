@@ -185,9 +185,11 @@ static size_t CurlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return bytes;
 }
 
-// Sink write callback: discards the body (used by the probe's GET fallback).
+// Sink write callback: accepts the 1-byte probe window, aborting immediately
+// if the server ignored Range and started streaming the full body.
 static size_t CurlDiscard(char* /*ptr*/, size_t size, size_t nmemb, void* /*ud*/) {
-    return size * nmemb;
+    const size_t bytes = size * nmemb;
+    return bytes <= 1 ? bytes : 0;
 }
 
 // Progress callback used only to abort a probe transfer when Stop() is called.
@@ -557,10 +559,11 @@ void Downloader::Start(const std::string& url, const std::string& output_path,
             if (all_ok) {
                 // The file is already the final output (segments wrote
                 // directly into it), so nothing to merge.
+                const uint64_t final_bytes = total > 0 ? total : live_bytes_.load();
                 result_.status = DownloadStatus::Completed;
                 result_.file_path = output_path_;
-                result_.total_bytes = total;
-                result_.downloaded_bytes = total;
+                result_.total_bytes = static_cast<double>(final_bytes);
+                result_.downloaded_bytes = static_cast<double>(final_bytes);
             } else if (stop_requested_.load()) {
                 result_.status = DownloadStatus::Stopped;
                 result_.file_path = output_path_;
@@ -662,7 +665,8 @@ bool Downloader::Probe(const std::string& url,
         CURLcode rc2 = curl_easy_perform(curl);
         long code2 = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code2);
-        if (rc2 == CURLE_OK && code2 < 400) {
+        if ((rc2 == CURLE_OK || rc2 == CURLE_WRITE_ERROR) &&
+            code2 >= 200 && code2 < 400) {
             http_code = code2;
             out_supports_range = (code2 == 206);
             uint64_t t2 = 0;
@@ -1723,8 +1727,12 @@ void Downloader::ProgressLoop(uint64_t total) {
     if (cb) {
         ProgressInfo info{};
         info.id = id_;
-        info.total_bytes = static_cast<double>(chunked_mode_ ? total_ : total);
-        info.downloaded_bytes = static_cast<double>(live_bytes_.load());
+        const uint64_t raw_total = chunked_mode_ ? total_ : total;
+        const uint64_t done_bytes = live_bytes_.load();
+        info.total_bytes = static_cast<double>(
+            (raw_total == 0 && !stop_requested_.load() && !any_failed_.load())
+                ? done_bytes : raw_total);
+        info.downloaded_bytes = static_cast<double>(done_bytes);
         cb(info);
     }
 }

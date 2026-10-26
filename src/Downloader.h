@@ -61,7 +61,22 @@ struct RequestContext {
 /// verification all stay on; only the "revoked by the CA after issuance"
 /// lookup is skipped. No-op on non-Schannel backends. Inline so the test
 /// executables pick it up without linking the whole engine.
+// libcurl's global_init() calls Curl_ssl_init() (schannel_init) before
+// Curl_win32_init() (curlx_verify_windows_init), so on the first init pass
+// RtlVerifyVersionInfo is not resolved yet and Schannel falls back to
+// VerifyVersionInfoW — which reports Windows 8.0 in unmanifested binaries and
+// permanently disables ALPN (s_win_has_alpn = false). Cycling global_init once
+// at startup runs schannel_init a second time after RtlVerifyVersionInfo is
+// bound, enabling ALPN so strict TLS/WAF gateways do not reject the handshake.
+inline const bool kCurlAlpnInit = [] {
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl_global_cleanup();
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    return true;
+}();
+
 inline void ApplyTlsPolicy(CURL* curl) {
+    (void)kCurlAlpnInit;
     curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS,
                      static_cast<long>(CURLSSLOPT_NO_REVOKE));
 }

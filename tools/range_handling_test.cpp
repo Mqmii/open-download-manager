@@ -39,6 +39,7 @@ void Check(const std::string& what, bool ok, const std::string& detail = {}) {
 enum class Manners {
     Honor,       // proper 206 + Content-Range
     Ignore,      // always 200 + the whole body, Range never honored
+    NoLength,    // 200 without Content-Length (streamed until EOF)
     LieOnProbe,  // 206 for the probe's "0-0", then 200 + whole body
     Overrun      // 206, but the window is WIDER than the one asked for
 };
@@ -158,9 +159,10 @@ private:
             payload = body_;
             hdr = "HTTP/1.1 200 OK\r\n";
         }
-        hdr += "Content-Type: application/octet-stream\r\n"
-               "Content-Length: " + std::to_string(payload.size()) + "\r\n"
-               "Connection: close\r\n\r\n";
+        hdr += "Content-Type: application/octet-stream\r\n";
+        if (manners_ != Manners::NoLength)
+            hdr += "Content-Length: " + std::to_string(payload.size()) + "\r\n";
+        hdr += "Connection: close\r\n\r\n";
 
         send(c, hdr.data(), (int)hdr.size(), 0);
         if (!head) {
@@ -374,6 +376,69 @@ int main() {
         Check("file is byte-for-byte correct", FileMatches(out, srv.Body()));
         Cleanup(out);
         srv.Stop();
+    }
+
+    // 6. Unknown-length stream (no Content-Length, Range ignored): must finish
+    //    and report the actual bytes written as both total and downloaded.
+    {
+        std::printf("streamed response without Content-Length\n");
+        Server srv(Manners::NoLength, kSmall);
+        if (!srv.Start()) { std::printf("  [FAIL] no socket\n"); return 1; }
+        const std::string out = "rh_nolength.bin";
+        Cleanup(out);
+
+        odm::Downloader dl;
+        dl.Start(srv.Url(), out, "t6");
+        const odm::DownloadResult r = dl.WaitForCompletion();
+
+        Check("download reports Completed",
+              r.status == odm::DownloadStatus::Completed);
+        Check("file is byte-for-byte correct", FileMatches(out, srv.Body()));
+        Check("final result reports actual byte count instead of 0",
+              r.total_bytes == static_cast<double>(kSmall) &&
+              r.downloaded_bytes == static_cast<double>(kSmall));
+        Cleanup(out);
+        srv.Stop();
+    }
+
+    // 7. TLS ClientHello on a policy-configured handle must include ALPN
+    //    ("http/1.1") even when the host binary has no Windows 10 manifest.
+    {
+        std::printf("TLS ClientHello includes ALPN under ApplyTlsPolicy\n");
+        SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        bind(ls, (sockaddr*)&a, sizeof(a));
+        listen(ls, 1);
+        int alen = sizeof(a);
+        getsockname(ls, (sockaddr*)&a, &alen);
+        const uint16_t port = ntohs(a.sin_port);
+
+        std::string hello;
+        std::thread acc([&] {
+            SOCKET c = accept(ls, nullptr, nullptr);
+            if (c != INVALID_SOCKET) {
+                char buf[2048];
+                int n = recv(c, buf, sizeof(buf), 0);
+                if (n > 0) hello.assign(buf, (size_t)n);
+                closesocket(c);
+            }
+            closesocket(ls);
+        });
+
+        CURL* c = curl_easy_init();
+        odm::ApplyTlsPolicy(c);
+        const std::string u = "https://127.0.0.1:" + std::to_string(port) + "/";
+        curl_easy_setopt(c, CURLOPT_URL, u.c_str());
+        curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, 2000L);
+        curl_easy_perform(c);
+        curl_easy_cleanup(c);
+        acc.join();
+
+        Check("ClientHello carries http/1.1 ALPN extension",
+              hello.find("http/1.1") != std::string::npos);
     }
 
     curl_global_cleanup();
